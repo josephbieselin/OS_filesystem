@@ -25,7 +25,6 @@ int main(int argc, char *argv[])
 	if(argc < 3)
 	{
 		// not enough arguments so print to standard error and abort
-		fprintf(stderr, "expected command: jabFS [FUSE and mount options rootDir mountPoint\n");
-		abort();
+		fprintf(stderr
 	}
 }
