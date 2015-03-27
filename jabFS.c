@@ -18,9 +18,13 @@ DEFINED CONSTANTS TO BE USED
 #define ____ ###
 */
 
+/*
+Expected arguments (in specified order): jabFS [FUSE and mount options] rootDir mountPoint
+*/
 int main(int argc, char *argv[])
 {
 	int fuse_stat;
+	struct jab_state *jab_data; // 
 	// Check that at least 2 arguments were passed: root and mount point
 	if(argc < 3)
 	{
