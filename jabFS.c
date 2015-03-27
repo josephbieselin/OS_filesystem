@@ -18,6 +18,9 @@
 #define MAX_FILE_SIZE 1638400
 #define BLOCK_SIZE 4096
 
+// Default path files
+static const char *files_path = "/fuse";
+
 // fuse_conn_info contains connection info that is passed to the ->init() method
 // initialize fusedata blocks from fusedata.0 to fusedata.(MAX_NUM_BLOCKS-1)
 // Each block is preallocated (upon FS creation) with all zeros and stored on the host file system
