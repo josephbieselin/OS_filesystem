@@ -22,30 +22,42 @@
 // Default path files
 static const char *files_path = "/fuse";
 
+// struct and define format below created from docs from the following URL: http://www.cs.nmsu.edu/~pfeiffer/fuse-tutorial/
+struct jab_state {
+	char *rootdir;
+};
+#define JAB_DATA ((struct jab_state *) fuse_get_context()->private_data)
+// JAB_DATA can now point to fuse_get_context()'s private_data field which is private filesystem data used while the filesystem is open
+
+
+// -------------------------- FILESYSTEM FUNCTIONS -------------------------- //
+
 // fuse_conn_info contains connection info that is passed to the ->init() method
 // initialize fusedata blocks from fusedata.0 to fusedata.(MAX_NUM_BLOCKS-1)
 // Each block is preallocated (upon FS creation) with all zeros and stored on the host file system
 void *jab_init(struct fuse_conn_info *conn)
 {
-	char *path = calloc(CHAR_FILE_LENGTH * sizeof(char));
+	char *path = calloc(1, CHAR_FILE_LENGTH * sizeof(char));
 	char i_str[20]; // used for itoa in the for loop below
 	char fusedata_str[10]; // will contain "fusedata."
 	strcpy(fusedata_str, "fusedata.");
-	for(int i = 0; i < MAX_NUM_BLOCKS; ++i)
-	{
+	int i;
+	for(i = 0; i < MAX_NUM_BLOCKS; ++i) {
 		itoa(i, i_str, 10); // convert i to a string stored in i_str
 		strcpy(path, files_path); // re-initialize FUSE root path
 		strcat(path, strcat(fusedata_str, i_str)); // path will now look like: /fuse/fusedata.X --> /fuse can be changed by changing files_path and X is an integer value
 		FILE *fd = fopen(path, "r");
-		if(!fd)
-		{
+		if(!fd) {
 			fprintf(stderr, "ERROR: could not open fusedata blocks");
 			abort();
 		}
 		fclose(fd);
 	}
 	free(path); // free up allocated memory space
+	return JAB_DATA;
 }
+
+// -------------------------- FILESYSTEM FUNCTIONS -------------------------- //
 
 
 // redefined functions that will call FUSE functions to implement UNIX commands
@@ -69,40 +81,25 @@ statfs
 unlink
 write
 */
+
 static struct fuse_operations jab_oper = {
-	.init = jab_init
+	.init = jab_init,
 };
 
 
-/*
-Expected arguments (in specified order): jabFS [FUSE and mount options] rootDir mountPoint
-*/
+// Expected arguments (in specified order): jabFS mountPoint
 int main(int argc, char *argv[])
 {
-	int fuse_stat;
-	struct jab_state *jab_data; // useful due to fuse_context -> private_date always being available as private filesystem data
-	// Check that at least 2 arguments were passed: root and mount point
-	if(argc < 3)
-	{
-		// not enough arguments so print to standard error and abort
-		// Code below is based on error checking from following URL: http://www.cs.nmsu.edu/~pfeiffer/fuse-tutorial/
-		fprintf(stderr, "expected command: jabFS [FUSE and mount options rootDir mountPoint\n");
-		abort();
-	}
-	
+	// struct and testing created from following URL: http://www.cs.nmsu.edu/~pfeiffer/fuse-tutorial/
+	struct jab_state *jab_data;
 	jab_data = malloc(sizeof(struct jab_state));
-	if(jab_data == NULL)
-	{
-		fprintf(stderr, "ERROR: fuse_context for private filesystem data could not be allocated any memory\n");
+	if(jab_data == NULL) {
+		fprintf(stderr, "ERROR: Allocation error in main");
 		abort();
 	}
-	
-	// set the directory where the filesystem will be located
-	// assume the second to last argument passed is the root directory and have the function return that value
-	jab_data->rootdir = realpath(argv[argc-2], NULL);
-	
+
 	// return 0 on a successful call
 	// jabFS_oper will define the functions created for this filesystem
-	// jab_data is the user data that will be supplied in the context during init()
-	return fuse_main(argc, argv, &jabFS_oper, jab_data);
+	// NULL cab be user data that will be supplied in the context during init()
+	return fuse_main(argc, argv, &jab_oper);
 }
