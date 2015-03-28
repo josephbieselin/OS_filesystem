@@ -17,6 +17,7 @@
 #define MAX_NUM_BLOCKS 10000
 #define MAX_FILE_SIZE 1638400
 #define BLOCK_SIZE 4096
+#define CHAR_FILE_LENGTH 50	// the length in characters of the filesystem in the host directory; i.e.: /fuse/fusedata.X --> 0 <= X <= MAX_NUM_BLOCKS - 1
 
 // Default path files
 static const char *files_path = "/fuse";
@@ -26,7 +27,24 @@ static const char *files_path = "/fuse";
 // Each block is preallocated (upon FS creation) with all zeros and stored on the host file system
 void *jab_init(struct fuse_conn_info *conn)
 {
-
+	char *path = calloc(CHAR_FILE_LENGTH * sizeof(char));
+	char i_str[20]; // used for itoa in the for loop below
+	char fusedata_str[10]; // will contain "fusedata."
+	strcpy(fusedata_str, "fusedata.");
+	for(int i = 0; i < MAX_NUM_BLOCKS; ++i)
+	{
+		itoa(i, i_str, 10); // convert i to a string stored in i_str
+		strcpy(path, files_path); // re-initialize FUSE root path
+		strcat(path, strcat(fusedata_str, i_str)); // path will now look like: /fuse/fusedata.X --> /fuse can be changed by changing files_path and X is an integer value
+		FILE *fd = fopen(path, "r");
+		if(!fd)
+		{
+			fprintf(stderr, "ERROR: could not open fusedata blocks");
+			abort();
+		}
+		fclose(fd);
+	}
+	free(path); // free up allocated memory space
 }
 
 
