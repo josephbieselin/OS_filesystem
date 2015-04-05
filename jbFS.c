@@ -252,6 +252,18 @@ static int jb_mkdir(const char *path, mode_t mode)
 	return 0;
 }
 
+/* Remove a file
+ * Remove the given file, sym-link, hard link, or special node.
+ * NOTE: with hard links supported, unlink only deletes the data when the last hard link is removed.
+ * 
+ * unlink
+ * ------
+ * EBUSY		the file pathname cannot but unlinked because it is being used by the system or another process
+ * EISDIR		pathname refers to a directory
+ * ENAMETOOLONG	pathname was too long
+ * ENOENT		a component in pathname does not exist or is a dangling symbolic link, or pathname is empty
+ * ENOTDIR		a component used as a directory in pathname is not, in fact, a directory
+*/
 static int jb_unlink(const char *path)
 {
 	int res;
@@ -263,6 +275,7 @@ static int jb_unlink(const char *path)
 	return 0;
 }
 
+// NOT A NECESSARY FUNCTION TO CREATE FOR PROJECT ?????????????????????
 static int jb_rmdir(const char *path)
 {
 	int res;
@@ -274,6 +287,7 @@ static int jb_rmdir(const char *path)
 	return 0;
 }
 
+// NOT A NECESSARY FUNCTION TO CREATE FOR PROJECT ?????????????????????
 static int jb_symlink(const char *from, const char *to)
 {
 	int res;
@@ -285,6 +299,31 @@ static int jb_symlink(const char *from, const char *to)
 	return 0;
 }
 
+/* Rename a file
+ * Rename the file, directory, or other object "from" to the target "to".
+ * Note that the source and target don't have to be in the same directory;
+ * So it may be necessary to move the source to an entirely new directory
+ * 
+ * rename
+ * ------
+ * Change the name or location of a file.
+ * Any other hard links to the file are unaffected.
+ * Open file descriptors for oldpath are also unaffected.
+ * If newpath already exists, it will be atomically replaced.
+ * If oldpath and newpath are exists hard links reffering to the same file, then "rename" does nothing and returns a success status.
+ * oldpath can specify a directory; in this case, newpath must either not exist, or it must specify an empty directory
+ * ERRORS:
+ * EBUSY		rename fails because oldpath/newpath is a directory that is in use by some process
+ * EDQUOT		user's quote of disk blocks on the filesystem has been exhausted
+ * EINVAL		the new pathname contained a path prefix of the old, or, more generally, an attempt was made to make a directory a subdir of itself
+ * EISDIR		newpath is an existing directory, but oldpath is not a directory
+ * EMLINK		oldpath already has the max number of links to it, or it was a directory and the directory containing newpath has the max number of links
+ * ENAMETOOLONG	oldpath or newpath was too long
+ * ENOENT		the link named by oldpath does not exist; or, a directory component in newpath does not exist; or oldpath/newpath is an empty str
+ * ENOSPC		the device containing the file has no room for the new directory entry
+ * ENOTDIR		a component used as a directory in oldpath or newpath is not, in fact, a directory; or, oldpath is a dir, and newpath exists but is not a dir
+ * EEXIST		newpath is a nonempty dir, that is, contains entries other than '.' and '..'
+*/
 static int jb_rename(const char *from, const char *to)
 {
 	int res;
