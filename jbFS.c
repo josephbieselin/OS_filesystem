@@ -117,6 +117,11 @@ struct jb_dirp {
 	off_t offset;
 };
 
+/*
+ * Open a directory for reading.
+ * Unless the 'default_permissions' mount option is given, this method should check if opendir is permitted for this directory.
+ * Optionally opendir may also return an arbitrary filehandle in the fuse_file_info struct, which will be passed to readdir, closedir, and fsyncdir
+*/
 static int jb_opendir(const char *path, struct fuse_file_info *fi)
 {
 	int res;
@@ -137,11 +142,23 @@ static int jb_opendir(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
+// Returns (struct jb_dirp *) fi->fh which is a file handle
 static inline struct jb_dirp *get_dirp(struct fuse_file_info *fi)
 {
+	// uintptr_t: int type capable of holding a value converted from a void pointer and then be converted back to that type with a value that compares equal to the original pointer
 	return (struct jb_dirp *) (uintptr_t) fi->fh;
 }
 
+/* Read directory
+ * Filesystem may choose between two modes of operation:
+ * 	1)	readdir implementation ignores the offset parameter, and passes zero to the filler function's offset;
+ * 		the filler function will not return '1' (unless an error happens), so the whole directory is read in a single readdir operation
+ * 	2)	readdir implementation keeps track of the offsets of the directory entries;
+ * 		it uses the offset parameter and always passes non'zero offset to the filler function;
+ * 		when the buffer is full (or an error happens) the filler function will return '1'
+ * 
+ * 
+*/
 static int jb_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		       off_t offset, struct fuse_file_info *fi)
 {
