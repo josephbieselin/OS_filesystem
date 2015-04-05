@@ -50,12 +50,10 @@
  * stat
  * ----
  * Return info about a file.
- * dev_t		st_dev			ID of device containing file
- * ino_t		st_ino			inode number
+ * ino_t		st_ino			inode number		(ignored unless 'use_ino' mount option is given)
  * mode_t		st_mode			protection
  * nlink_t		st_nlink		number of hard links
  * off_t		st_size			total size, in bytes
- * blksize_t	st_blksize		blocksize for filesystem I/O
  * clkcnt_t		st_blocks		number of __Byte blocks allocated
  * time_t		st_atime		time of last access
  * time_t		st_mtime		time of last modification
@@ -77,6 +75,13 @@ static int jb_getattr(const char *path, struct stat *stbuf)
 	return 0;
 }
 
+/*
+ * If path is a symbolic link, fill buf with its target, up to size.
+ * Not required if you don't support symbolic links.
+ * 
+ * Symbolic-link support requires only readlink and symlink.
+ * FUSE will take care of tracking symbolic links in paths, so path-eval code doesn't need to worry about it.
+*/
 static int jb_readlink(const char *path, char *buf, size_t size)
 {
 	int res;
@@ -90,8 +95,25 @@ static int jb_readlink(const char *path, char *buf, size_t size)
 }
 
 struct jb_dirp {
+	/* DIR *
+	 * directory stream
+	 * Ordered sequence of all the directory entries in a particular directory.
+	 * Directory entries represent files.
+	 * Files may be removed or added from/to a directory asynchronously to the operation of readdir()
+	*/
 	DIR *dp;
+	
+	/* struct dirent *
+	 * structure type used to return info about directory entries
+	 * ----------------------------------------------------------
+	 * char d_name[]			null-terminated file name component
+	 * ino_t d_fileno			file serial number (for most file this is the same as the st_ino member that "stat" will return for a file)
+	 * unsigned char d_name		length of the file name, not including term-null char
+	 * unsigned char d_type		type of the file, possibly unknown
+	*/
 	struct dirent *entry;
+	
+	
 	off_t offset;
 };
 
