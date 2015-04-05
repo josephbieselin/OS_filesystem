@@ -511,6 +511,28 @@ static int jb_release(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
+/* Clean up filesystem (called on filesystem exit)
+ * The "private_data" comes from the return value of init
+*/
+static int jb_destroy(void *buf)
+{
+	
+}
+
+/* Initialize filesystem
+ * The return value will be passed in the "private_data" field of "fuse_context" to all file operations and as a parameter to the "destroy" method
+ * 
+ * fuse_conn_info: Gives info about what features are supported by FUSE, and can be used to request certain capabilities.
+ * The return value of this function is available to all file operations in the "private_data" field of "fuse_context".
+ * It is also passed as a paramater to the destroy() method.
+ * 
+ * 
+*/
+void *buf jb_init(struct fuse_conn_info *conn)
+{
+	
+}
+
 static struct fuse_operations jb_oper = {
 	// Functions needed for Filesystem (Part 1)
 	.getattr	= jb_getattr,
@@ -531,10 +553,16 @@ static struct fuse_operations jb_oper = {
 	.rename		= jb_rename;
 	.unlink		= jb_unlink;
 	// Functions needed for Filesystem (Part 1)
+	.flag_nullpath_ok = 0,
+	/* .flag_nullpath_ok
+	 * ------------------
+	 * Set so that code can accept a NULL path argument (because it can get file info from fi->fh) for
+	 * the following operations: flush, lock, read, readdir, release, releasedir, write, etc.
+	*/
 };
 
 int main(int argc, char *argv[])
 {
-	chdir(FILES_DIR);
-	return fuse_main(argc, argv, &jb_oper, files_path);
+	// chdir(FILES_DIR); char* files_path = (char *) malloc(MAX_PATH); getcwd(files_path, MAX_PATH);
+	return fuse_main(argc, argv, &jb_oper, NULL); // files_path);
 }
