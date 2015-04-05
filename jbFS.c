@@ -121,6 +121,11 @@ struct jb_dirp {
  * Open a directory for reading.
  * Unless the 'default_permissions' mount option is given, this method should check if opendir is permitted for this directory.
  * Optionally opendir may also return an arbitrary filehandle in the fuse_file_info struct, which will be passed to readdir, closedir, and fsyncdir
+ * 
+ * FUSE provides a "file handle" in the "fuse_file_info" structure.
+ * The file handle is stored in the "fh" element of the structure, which is an unsigned 64-bit int (uint64_t) uninterpreted by FUSE.
+ * If you choose to use it, you should set that field in your "open", "create", and "opendir" functions.
+ * Other functions can then use it.
 */
 static int jb_opendir(const char *path, struct fuse_file_info *fi)
 {
@@ -335,6 +340,21 @@ static int jb_rename(const char *from, const char *to)
 	return 0;
 }
 
+/* Create a hard link between "from" and "to"
+ * Make a new name for a file.
+ * If newpath exists, it will NOT be overwritten.
+ * 
+ * link
+ * ----
+ * EDQUOT		the user's quote of disk blocks on the filesystem has been exhausted
+ * EEXIST		newpath already exists
+ * EMLINK		the file referred to by oldpath already has the max number of links to it
+ * ENAMETOOLONG	oldpath/newpath was too long
+ * ENOENT		a directory component in oldpath/newpath does not exist or is a dangling sym-link
+ * ENOSPC		the device containing the file has no room for the new directory entry
+ * ENOTDIR		a component used as a directory in oldpath/newpath is not, in fact, a directory
+ * EPERM		oldpath is a directory
+*/
 static int jb_link(const char *from, const char *to)
 {
 	int res;
@@ -346,67 +366,14 @@ static int jb_link(const char *from, const char *to)
 	return 0;
 }
 
-static int jb_chmod(const char *path, mode_t mode)
-{
-	int res;
-
-	res = chmod(path, mode);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-static int jb_chown(const char *path, uid_t uid, gid_t gid)
-{
-	int res;
-
-	res = lchown(path, uid, gid);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-static int jb_truncate(const char *path, off_t size)
-{
-	int res;
-
-	res = truncate(path, size);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-static int jb_ftruncate(const char *path, off_t size,
-			 struct fuse_file_info *fi)
-{
-	int res;
-
-	(void) path;
-
-	res = ftruncate(fi->fh, size);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-#ifdef HAVE_UTIMENSAT
-static int jb_utimens(const char *path, const struct timespec ts[2])
-{
-	int res;
-
-	/* don't use utime/utimes since they follow symlinks */
-	res = utimensat(0, path, ts, AT_SYMLINK_NOFOLLOW);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-#endif
-
+/* Create and open a file
+ * If the file does not exist, first create it with the specified mode, and then open it
+ * 
+ * FUSE provides a "file handle" in the "fuse_file_info" structure.
+ * The file handle is stored in the "fh" element of the structure, which is an unsigned 64-bit int (uint64_t) uninterpreted by FUSE.
+ * If you choose to use it, you should set that field in your "open", "create", and "opendir" functions.
+ * Other functions can then use it.
+*/
 static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	int fd;
@@ -419,6 +386,17 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	return 0;
 }
 
+/* File open operation
+ * Optionally "open" may also return an arbitrary filehandle in the "fuse_file_info" struct, which will be passed to all file opeartions
+ * If file handles aren't used, this function should check for existence and permissions and return either success or an error code.
+ * If file handles are used, you should also allocate any necessary structs and set fi->fh.
+ * In addition, "fi" has some other fields that an advanced filesystem might find useful; see struct def in fuse_common.h
+ * 
+ * FUSE provides a "file handle" in the "fuse_file_info" structure.
+ * The file handle is stored in the "fh" element of the structure, which is an unsigned 64-bit int (uint64_t) uninterpreted by FUSE.
+ * If you choose to use it, you should set that field in your "open", "create", and "opendir" functions.
+ * Other functions can then use it.
+*/
 static int jb_open(const char *path, struct fuse_file_info *fi)
 {
 	int fd;
@@ -431,6 +409,25 @@ static int jb_open(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
+/* Read data from an open file
+ * Read size bytes from the given file into the buffer buf, beginning offset bytes into the file.
+ * Returns the number of bytes transferred, or 0 if offset was at or beyond the end of the file.
+ * 
+ * read
+ * ----
+ * Read from a file descriptor.
+ * On success, the number of bytes read is returned (0 indicates EOF);
+ * the file position is advanced by this number.
+ * It is not an error if this number is smaller than the number of bytes requested;
+ * this many happen for example because fewer bytes are actually available right now.
+ * On error, -1 is returned, and errno is set appropriately.
+ * EAGAIN		the file descriptor "fd" refers to a file other than a socket and has been marked nonoblocking (O_NONBLOCK), and the read would block
+ * EBADF		fd is not a valid file descriptor or is not open for reading
+ * EINTR		the call was interrupted by a signal before any data was read
+ * EISDIR		fd refers to a directory
+ * 
+ * POSIX allows a read() that is interrupted after reading some data to return -1 (with errno set to EINTR) or to return the number of bytes already read
+*/
 static int jb_read(const char *path, char *buf, size_t size, off_t offset,
 		    struct fuse_file_info *fi)
 {
@@ -442,28 +439,6 @@ static int jb_read(const char *path, char *buf, size_t size, off_t offset,
 		res = -errno;
 
 	return res;
-}
-
-static int jb_read_buf(const char *path, struct fuse_bufvec **bufp,
-			size_t size, off_t offset, struct fuse_file_info *fi)
-{
-	struct fuse_bufvec *src;
-
-	(void) path;
-
-	src = malloc(sizeof(struct fuse_bufvec));
-	if (src == NULL)
-		return -ENOMEM;
-
-	*src = FUSE_BUFVEC_INIT(size);
-
-	src->buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
-	src->buf[0].fd = fi->fh;
-	src->buf[0].pos = offset;
-
-	*bufp = src;
-
-	return 0;
 }
 
 static int jb_write(const char *path, const char *buf, size_t size,
