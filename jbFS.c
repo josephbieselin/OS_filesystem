@@ -280,30 +280,6 @@ static int jb_unlink(const char *path)
 	return 0;
 }
 
-// NOT A NECESSARY FUNCTION TO CREATE FOR PROJECT ?????????????????????
-static int jb_rmdir(const char *path)
-{
-	int res;
-
-	res = rmdir(path);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-// NOT A NECESSARY FUNCTION TO CREATE FOR PROJECT ?????????????????????
-static int jb_symlink(const char *from, const char *to)
-{
-	int res;
-
-	res = symlink(from, to);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
 /* Rename a file
  * Rename the file, directory, or other object "from" to the target "to".
  * Note that the source and target don't have to be in the same directory;
@@ -514,9 +490,9 @@ static int jb_release(const char *path, struct fuse_file_info *fi)
 /* Clean up filesystem (called on filesystem exit)
  * The "private_data" comes from the return value of init
 */
-static int jb_destroy(void *buf)
+void jb_destroy(void *buf)
 {
-	
+
 }
 
 /* Initialize filesystem
@@ -525,13 +501,38 @@ static int jb_destroy(void *buf)
  * fuse_conn_info: Gives info about what features are supported by FUSE, and can be used to request certain capabilities.
  * The return value of this function is available to all file operations in the "private_data" field of "fuse_context".
  * It is also passed as a paramater to the destroy() method.
- * 
- * 
 */
-void *buf jb_init(struct fuse_conn_info *conn)
+void * jb_init(struct fuse_conn_info *conn)
 {
-	
+		
+		return NULL;
 }
+
+/* rmdir() and symlink() are unused in HW 2
+// NOT A NECESSARY FUNCTION TO CREATE FOR PROJECT ?????????????????????
+static int jb_rmdir(const char *path)
+{
+	int res;
+
+	res = rmdir(path);
+	if (res == -1)
+		return -errno;
+
+	return 0;
+}
+
+// NOT A NECESSARY FUNCTION TO CREATE FOR PROJECT ?????????????????????
+static int jb_symlink(const char *from, const char *to)
+{
+	int res;
+
+	res = symlink(from, to);
+	if (res == -1)
+		return -errno;
+
+	return 0;
+}
+*/
 
 static struct fuse_operations jb_oper = {
 	// Functions needed for Filesystem (Part 1)
@@ -542,16 +543,16 @@ static struct fuse_operations jb_oper = {
 	.write		= jb_write,
 	.statfs		= jb_statfs,
 	.release	= jb_release,
-	.destroy	= jb_destory;
-	.init		= jb_init;
-	.link		= jb_link;
-	.mkdir		= jb_mkdir;
-	.opendir	= jb_opendir;
-	.readdir	= jb_readdir;
-	.readlink	= jb_readlink;
-	.releasedir	= jb_releasedir;
-	.rename		= jb_rename;
-	.unlink		= jb_unlink;
+	.destroy	= jb_destroy,
+	.init		= jb_init,
+	.link		= jb_link,
+	.mkdir		= jb_mkdir,
+	.opendir	= jb_opendir,
+	.readdir	= jb_readdir,
+	.readlink	= jb_readlink,
+	.releasedir	= jb_releasedir,
+	.rename		= jb_rename,
+	.unlink		= jb_unlink,
 	// Functions needed for Filesystem (Part 1)
 	.flag_nullpath_ok = 0,
 	/* .flag_nullpath_ok
