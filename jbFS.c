@@ -441,6 +441,10 @@ static int jb_read(const char *path, char *buf, size_t size, off_t offset,
 	return res;
 }
 
+/* Write data to an open file
+ * Write should return exactly the number of bytes request except on error.
+ * Similar to "read", except it CANNOT return 0 (0 indicates nothing was written to the file).
+*/
 static int jb_write(const char *path, const char *buf, size_t size,
 		     off_t offset, struct fuse_file_info *fi)
 {
@@ -454,20 +458,28 @@ static int jb_write(const char *path, const char *buf, size_t size,
 	return res;
 }
 
-static int jb_write_buf(const char *path, struct fuse_bufvec *buf,
-		     off_t offset, struct fuse_file_info *fi)
-{
-	struct fuse_bufvec dst = FUSE_BUFVEC_INIT(fuse_buf_size(buf));
-
-	(void) path;
-
-	dst.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
-	dst.buf[0].fd = fi->fh;
-	dst.buf[0].pos = offset;
-
-	return fuse_buf_copy(&dst, buf, FUSE_BUF_SPLICE_NONBLOCK);
-}
-
+/* Get file system statistics
+ * 'f_frsize', 'f_favail', 'f_fsid', and 'f_flag' fields are ignored
+ * 
+ * statvfs (description of the structure contents)
+ * -----------------------------------------------
+ * Returns info about a mounted filesystem.
+ * path is the pathname of any file within the mounted filesystem;
+ * buf is a pointer to a statvfs structure defined approximately as follows:
+ * 	unsigned long	f_bsize		filesystem block size
+ * 	fsblkcnt_t		f_blocks	size of fs in f_frsize (fragment size) units
+ * 	fsblkcnt_t		f_bfree		free blocks
+ * 	fsblkcnt_t		f_bavail	free blocks for unpriviledged users
+ * 	fsfilcnt_t		f_files		inodes
+ * 	fsfilcnt_t		f_ffree		free inodes
+ * 	unsigned long	f_namemax	maximum filename length
+ * 
+ * <sys/types.h>
+ * -------------
+ * fsblkcnt_t		used for file system block counts
+ * fsfilcnt_t		used for file system file counts
+ * fsblkcnt_t, fsfilcnt_t, and ino_t	shall be defined as unsigned int types
+*/
 static int jb_statfs(const char *path, struct statvfs *stbuf)
 {
 	int res;
@@ -479,118 +491,22 @@ static int jb_statfs(const char *path, struct statvfs *stbuf)
 	return 0;
 }
 
-static int jb_flush(const char *path, struct fuse_file_info *fi)
-{
-	int res;
-
-	(void) path;
-	/* This is called from every close on an open file, so call the
-	   close on the underlying filesystem.	But since flush may be
-	   called multiple times for an open file, this must not really
-	   close the file.  This is important if used on a network
-	   filesystem like NFS which flush the data/metadata on close() */
-	res = close(dup(fi->fh));
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
+/* Release an open file (called when there are no more references to an open file: all file descriptors are closed and all memory mappings are unmapped)
+ * For every open() call there will be exactly one release() call with the sanem flags and file descriptor.
+ * It is possible to have a file opened more than once, in which case only the last release will mean, that no more reads/writes will happen on the file.
+ * 
+ * No direct corresponding system call ("close" is related).
+ * 
+ * close
+ * -----
+ * Not checking the return value of "close" is a common but serious error.
+ * Not checking the return value when closing the file may lead to silent loss of data.
+ * However, "release" ignores the return value anyway.
+*/
 static int jb_release(const char *path, struct fuse_file_info *fi)
 {
 	(void) path;
 	close(fi->fh);
-
-	return 0;
-}
-
-static int jb_fsync(const char *path, int isdatasync,
-		     struct fuse_file_info *fi)
-{
-	int res;
-	(void) path;
-
-#ifndef HAVE_FDATASYNC
-	(void) isdatasync;
-#else
-	if (isdatasync)
-		res = fdatasync(fi->fh);
-	else
-#endif
-		res = fsync(fi->fh);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-#ifdef HAVE_POSIX_FALLOCATE
-static int jb_fallocate(const char *path, int mode,
-			off_t offset, off_t length, struct fuse_file_info *fi)
-{
-	(void) path;
-
-	if (mode)
-		return -EOPNOTSUPP;
-
-	return -posix_fallocate(fi->fh, offset, length);
-}
-#endif
-
-#ifdef HAVE_SETXATTR
-/* xattr operations are optional and can safely be left unimplemented */
-static int jb_setxattr(const char *path, const char *name, const char *value,
-			size_t size, int flags)
-{
-	int res = lsetxattr(path, name, value, size, flags);
-	if (res == -1)
-		return -errno;
-	return 0;
-}
-
-static int jb_getxattr(const char *path, const char *name, char *value,
-			size_t size)
-{
-	int res = lgetxattr(path, name, value, size);
-	if (res == -1)
-		return -errno;
-	return res;
-}
-
-static int jb_listxattr(const char *path, char *list, size_t size)
-{
-	int res = llistxattr(path, list, size);
-	if (res == -1)
-		return -errno;
-	return res;
-}
-
-static int jb_removexattr(const char *path, const char *name)
-{
-	int res = lremovexattr(path, name);
-	if (res == -1)
-		return -errno;
-	return 0;
-}
-#endif /* HAVE_SETXATTR */
-
-static int jb_lock(const char *path, struct fuse_file_info *fi, int cmd,
-		    struct flock *lock)
-{
-	(void) path;
-
-	return ulockmgr_op(fi->fh, cmd, lock, &fi->lock_owner,
-			   sizeof(fi->lock_owner));
-}
-
-static int jb_flock(const char *path, struct fuse_file_info *fi, int op)
-{
-	int res;
-	(void) path;
-
-	res = flock(fi->fh, op);
-	if (res == -1)
-		return -errno;
 
 	return 0;
 }
