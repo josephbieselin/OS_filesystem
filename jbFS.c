@@ -157,7 +157,24 @@ static inline struct jb_dirp *get_dirp(struct fuse_file_info *fi)
  * 		it uses the offset parameter and always passes non'zero offset to the filler function;
  * 		when the buffer is full (or an error happens) the filler function will return '1'
  * 
+ * Somehwat like "read", in that it starts at a given offset and returns results in a caller-supplied buffer.
+ * The offset not a byte offset, and the results are a series of "struct dirents" rather than being uninterpreted bytes.
+ * FUSE provides a "filler" function that will help put things into the buffer, making life easier.
  * 
+ * General plan for a complete and correct "readdir":
+ * --------------------------------------------------
+ * 1)	Find the first directory entry following the given offset
+ * 2)	Optionally, create a "struct stat" that describes the file as for getattr (but FUSE only looks at st_ino and the file-type bits of st_mode)
+ * 3)	Call the "filler" function with arguments of buf, the null-terminated filename, the address of your "struct stat" (or NULL if you have none), and the offset of the next directory entry
+ * 4)	If "filler" returns nonzero, or if there are no more files, return 0
+ * 5)	Find the next file in the directory
+ * 6)	Go back to step 2
+ * 
+ * From FUSE's POV, the offset is an uninterpreted off_t (i.e., unsigned int).
+ * You provide an offset when you call "filler", and its possible that such an offset might come back to you as an argument later.
+ * Typically, it's simply the byte offset (within your directory layout) of the directory entry, but it's really up to you.
+ * 
+ * NOTE: readdir can return errors in a number of instances; it can return -EBADF if the file handle is invalid, or -ENOENT if you use the path argument and the path doesn't exist
 */
 static int jb_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		       off_t offset, struct fuse_file_info *fi)
@@ -194,6 +211,9 @@ static int jb_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	return 0;
 }
 
+/* Release directory
+ * Similar to "release, except for directories.
+*/
 static int jb_releasedir(const char *path, struct fuse_file_info *fi)
 {
 	struct jb_dirp *d = get_dirp(fi);
@@ -203,20 +223,24 @@ static int jb_releasedir(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int jb_mknod(const char *path, mode_t mode, dev_t rdev)
-{
-	int res;
-
-	if (S_ISFIFO(mode))
-		res = mkfifo(path, mode);
-	else
-		res = mknod(path, mode, rdev);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
+/* Create a directory with the given name
+ * Note that the mode argument may not have the type specification bits set, (i.e., S_ISDIR(mode) can be false).
+ * To obtain the dorrect directory type bits, use "mode|S_IFDIR".
+ * 
+ * Directory permissions are encoded in mode.
+ * 
+ * mkdir
+ * -----
+ * the argument "mode" specifies the permissions to use.
+ * EDQUOT		user's quote of disk blocks or inodes on the filesystem has been exhausted
+ * EEXIST		pathname already exists (not necessarily as a directory)
+ * EFAULT		pathname points outside your accessible address space
+ * EMLINK		number of links to the parent directory would exceed LINK_MAX
+ * ENAMETOOLONG	pathname was too long
+ * ENOENT		a directory component in pathname does not exist or is a dangling sym-link
+ * ENOSPC		the device containing pathname has no room for the new directory
+ * ENOTDIR		a component used as a directory in pathname is not, in fact, a directory
+*/
 static int jb_mkdir(const char *path, mode_t mode)
 {
 	int res;
