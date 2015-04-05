@@ -172,13 +172,11 @@ static struct fuse_operations KATZ_oper = {
 
 int main(int argc, char *argv[])
 {
-	/*	
 	int x= MAX_FILES;
 	x--;
 	char* ch;
 	ch=malloc(100);
 	sprintf(ch,"%d",x);
-	*/
 	char* fullpath = realpath(argv[argc-1], NULL);
 	return fuse_main(argc, argv, &KATZ_oper, fullpath);
 }

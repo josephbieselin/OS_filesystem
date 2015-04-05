@@ -31,34 +31,25 @@
 static const char *files_path = "/tmp/fuse";
 */
 
-struct jab_state {
-	char *rootdir;
-};
-#define JAB_DATA ((struct jab_state *) fuse_get_context()->private_data)
 
 
 static const char *hello_str = "Hello World!\n";
 static const char *hello_path = "/hello";
 
 
-// takes an int num, converts it to a string "X", and returns a string "fusedata.X"
-char *fusedata_concat_X(int num)
+// concats "fusedata.X" to the passed in string
+char *fusedata_concat_X(char* str, int num)
 {
+	
 	char *block_num_str = malloc(15); // Up to 15 digits can be used to represent block numbers
 	sprintf(block_num_str, "%d", MAX_NUM_BLOCKS); // block_num_str will hold the string "20000" if 20000 blocks are to be created for this filesystem
 	char *i_str = malloc(strlen(block_num_str) + 1); // + 1 for NULL character
-	char *fusedata_str = malloc(MAX_PATH * sizeof(char));	
-	// char fusedata_str[MAX_PATH];
-
 	sprintf(i_str, "%d", num); // convert num to a string stored in i_str
-	strcpy(fusedata_str, fuse_get_context()->private_data);
-	fusedata_str = realpath(fusedata_str, strcat("fusedata.", i_str));
-	// strcat(fusedata_str, i_str);
-	free(block_num_str);
-	free(i_str);
-	// do not free fusedata_str memory because it returned by the function
+	strcat(str, "fusedata.");
+	strcat(str, i_str);
 
-	return fusedata_str;
+	free(block_num_str); free(i_str);
+	return str;
 }
 
 // --------------------------- FILESYSTEM FUNCTIONS ---------------------------- //
