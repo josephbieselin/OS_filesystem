@@ -39,6 +39,7 @@
 #define FREE_START		1		// start of the free block list
 #define FREE_END		25		// end of the free block list (must be enough blocks between start and end to hold values representing MAX_NUM_BLOCKS)
 #define ROOT			26		// block for root dir
+#define BLOCKS_IN_FREE	400		// number of free blocks to store in the free block list files on filesystem creation
 
 // Other Constants
 #define FILES_DIR "/fusedata"	// directory to put fusedata.X files
@@ -608,10 +609,53 @@ void create_superblock(char *buf)
 	free(creation_time_str);
 }
 
-// Creates fusedata.1 to fusedata.X blocks (X is MAX_NUM_BLOCKS-1)
-void create_blocks(char *buf, char *fusedata_digit, char *fusedata_str)
+// Set up comma separated values of free blocks after root
+void create_free_block_list(char *fusedata_digit, char *fusedata_str, unsigned int fusedata_digit_len)
 {
+	// the first block containing the free block list is a special case because it must not include the superblock, the blocks containing the free block list, or root
+	sprintf(fusedata_digit, "%d", FREE_START); // fusedata_digit will hold the digit of the first block that holds the free block list
+	strcpy(fusedata_str, "fusedata."); // initialize fusedata_str to contain "fusedata."
+	strcat(fusedata_str, fusedata_digit); // fusedata_str will now contain "fusedata.i" where 'i' is a digit of a block that holds the free block list
+	FILE *free_start_file = fopen(fusedata_str, "r+"); // create the fusedata.X file
+	char *free_block_str = (char *) malloc(fusedata_digit_len);
+	// incremenet over 'i' up to BLOCKS_IN_FREE - 1 to write that free block to the free block list
 	int i;
+	for (i = ROOT + 1; i < BLOCKS_IN_FREE - 1; ++i) {
+		fprintf(free_start_file, "%u,", i);
+	}
+	// got up to block BLOCKS_IN_FREE - 1, so write that to the file but do not add a comma to the end of it since this is the last free block
+	fprintf(free_start_file, "%u", i);
+	fclose(free_start_file);
+	// every block after the starting one has BLOCKS_IN_FREE free blocks per block
+	FILE *free_block_file;
+	// increment over 'j' to create the free block list for each file from FREE_START + 1 up to FREE_END
+	int j;
+	for (j = FREE_START + 1; j <= FREE_END; ++j) {
+		// get the fusedata.X file name where each increment of 'j' is 'X'
+		sprintf(fusedata_digit, "%d", j);
+		strcpy(fusedata_str, "fusedata.");
+		strcat(fusedata_str, fusedata_digit);
+		// open the fusedata.X file for reading and writing
+		free_block_file = fopen(fusedata_str, "r+");
+		// continue incrementing 'i' because 'i' left off where the next free block list should start
+		for (++i; i < BLOCKS_IN_FREE * j; ++i) {
+			fprintf(free_block_file, "%u,", i);
+		}
+		// don't add the extra comma to the end last free block for the file
+		fprintf(free_block_file, "%u", i);
+		fclose(free_block_file);
+	}
+}
+
+// Set up the root directory's initial structure
+void create_root(char *fusedata_digit, char *fusedata_str))
+{
+	
+}
+
+// Creates fusedata.1 to fusedata.X blocks (X is MAX_NUM_BLOCKS-1)
+void create_blocks(char *buf, char *fusedata_digit, char *fusedata_str, unsigned int fusedata_digit_len)
+{	
 	for (i = 1; i < MAX_NUM_BLOCKS; ++i) {
 		sprintf(fusedata_digit, "%d", i); // fusedata_digit will hold from 0 --> MAX_NUM_BLOCKS-1
 		strcpy(fusedata_str, "fusedata."); // initialize fusedata_str to contain "fusedata." on every loop to concat the block number onto it
@@ -620,6 +664,10 @@ void create_blocks(char *buf, char *fusedata_digit, char *fusedata_str)
 		fwrite(buf, BLOCK_SIZE, 1, fd); // write BLOCK_SIZE bytes of buf into fd 1 time
 		fclose(fd);
 	}
+	 // create the free block list
+	 create_free_block_list(fusedata_digit, fusedata_str, fusedata_digit_len);
+	 // create root
+	 create_root(fusedata_digit, fusedata_str);
 }
 
 // Essentially just updates the number of times mounted and writes that back to the fusedata.0 file
@@ -665,12 +713,13 @@ void * jb_init(struct fuse_conn_info *conn)
 		// setting up strings for fusedata.X to make strings for 'X' values
 		char *temp_str = (char *) malloc(MAX_BLOCK_DIGITS); // this will represent the 'X' in fusedata.X files
 		sprintf(temp_str, "%d", MAX_NUM_BLOCKS-1); // MAX_NUM_BLOCKS-1 because files go from fusedata.0 to fusedata.(MAX_NUM_BLOCKS-1)
-		char *fusedata_digit = (char *) malloc(strlen(temp_str)); // this will represent the 'X' in fusedata.X files
+		unsigned int fusedata_digit_len = strlen(temp_str); // largest possible char length to represent MAX_NUM_BLOCKS as a string
+		char *fusedata_digit = (char *) malloc(fusedata_digit_len)); // this will represent the 'X' in fusedata.X files
 		char *fusedata_str = malloc(MAX_PATH_LENGTH); // this will initially contain "fusedata."
 		// create super-block (fusedata.0)
 		create_superblock(buf);
 		// create fusedata.X blocks
-		create_blocks(buf, fusedata_digit, fusedata_str);
+		create_blocks(buf, fusedata_digit, fusedata_str, fusedata_digit_len);
 		
 		free(buf); free(temp_str); free(fusedata_digit); free(fusedata_str);		
 	} else { // fusedata.0 already exists (update the mounted variable in fusedata.0)
