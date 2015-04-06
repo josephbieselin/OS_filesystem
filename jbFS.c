@@ -116,25 +116,6 @@ static int jb_getattr(const char *path, struct stat *stbuf)
 	return res;
 }
 
-/*
- * If path is a symbolic link, fill buf with its target, up to size.
- * Not required if you don't support symbolic links.
- * 
- * Symbolic-link support requires only readlink and symlink.
- * FUSE will take care of tracking symbolic links in paths, so path-eval code doesn't need to worry about it.
-*/
-static int jb_readlink(const char *path, char *buf, size_t size)
-{
-	int res;
-
-	res = readlink(path, buf, size - 1);
-	if (res == -1)
-		return -errno;
-
-	buf[res] = '\0';
-	return 0;
-}
-
 struct jb_dirp {
 	/* DIR *
 	 * directory stream
@@ -609,11 +590,7 @@ void create_superblock(char *buf)
 	
 	// get creation time of this filesystem in reference to the Epoch
 	char *creation_time_str = (char *) malloc(20); // For 2014, time since Epoch would be 10 digits (so 20 possible digits is okay for now)
-	sprintf(creation_time_str, "%lu", time(NULL)); // put the an unsigned long representing time directly into the creation_time_str string
-		//time_t creation_time;
-		//time(&creation_time); // time_t time(time_t *t); return time as a number of seconds since the Epoch into memory pointed to by t
-		//char *creation_time_str = (char *) malloc(20); // For 2014, time since Epoch would be 10 digits (so 20 possible digits is okay for now)
-		//sprintf(creation_time_str, "%d", creation_time);
+	sprintf(creation_time_str, "%lu", time(NULL)); // put the an unsigned int representing time directly into the creation_time_str string
 		
 	/* format of super-block:
 	 * {creationTime:1376483073,mounted:50,devId:20,freeStart:1,freeEnd:25,root:26,maxBlocks:10000}
@@ -635,16 +612,17 @@ void create_superblock(char *buf)
 void create_blocks(char *buf, char *fusedata_digit, char *fusedata_str)
 {
 	int i;
-	for (i = 1; i < 2; ++i) {
+	for (i = 1; i < MAX_NUM_BLOCKS; ++i) {
 		sprintf(fusedata_digit, "%d", i); // fusedata_digit will hold from 0 --> MAX_NUM_BLOCKS-1
 		strcpy(fusedata_str, "fusedata."); // initialize fusedata_str to contain "fusedata." on every loop to concat the block number onto it
 		strcat(fusedata_str, fusedata_digit); // fusedata_str will now contain "fusedata.i" where 'i' goes up to MAX_NUM_BLOCKS-1
 		FILE *fd = fopen(fusedata_str, "w+"); // create the fusedata.X file
 		fwrite(buf, BLOCK_SIZE, 1, fd); // write BLOCK_SIZE bytes of buf into fd 1 time
 		fclose(fd);
-	}	
+	}
 }
 
+// Essentially just updates the number of times mounted and writes that back to the fusedata.0 file
 void update_superblock()
 {
 	char *temp = (char *) malloc(MAX_FILE_SIZE); // used to store string values that are already known and thus just need to pass over in the file stream
@@ -656,17 +634,12 @@ void update_superblock()
 	fscanf(superblock, "%s %s %s %u %s %s %s %s %s %s %s %s %s %s %s", temp, creation_time_str, temp, &mount_num, temp, temp, temp, temp, temp, temp, temp, temp, temp, temp, temp);
 	mount_num++; // increment the number of times mounted since the filesystem is being mounted again
 	rewind(superblock); // point the file stream back to the beginning to overwrite the data with the new mount number
-	fprintf(superblock, "{creationTime: %s, mounted: %u, devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, mount_num, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
+	// the %s for the actual created time was scanned as a string so the ',' char following it is also put into creation_time_str
+	fprintf(superblock, "{creationTime: %s mounted: %u devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, mount_num, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
 	
 	fclose(superblock);
 	
 	free(temp);
-	
-//	fscanf(superblock, "%s", temp); // temp == "creationTime:"
-//	unsigned int creation_time; fscanf(superblock, "%u", creation_time); // creation_time == "xxxxxxxxx" (each 'x' is a decimal digit representing the creation time)
-//	fscanf(superblock, "%s", temp); // temp == ","
-//	fscanf(superblock, "%s%u", temp, ); // temp == "mounted:
-//	char *rest_of_file = (char *) malloc(MAX_FILE_SIZE);		fgets(rest_of_file, MAX_FILE_SIZE, superblock);	// put the rest of the file after the mounted number is gotten into the rest_of_file string to be copied back to fusedata.0
 }
 
 /* Initialize filesystem
@@ -683,7 +656,7 @@ void * jb_init(struct fuse_conn_info *conn)
 		fuse_get_context()->private_data returns the user_data passed to fuse_main().
 		Really seems like either it should be a third parameter coming in here, or else the fact should be documented.
 	*/
-	chdir(FILES_DIR); // FILES_DIR is the directory where the fusedata.X files will be located
+	chdir(fuse_get_context()->private_data); // FILES_DIR is the directory where the fusedata.X files will be located
 	if (!file_exists("fusedata.0")) {
 		// setting a string with BLOCK_SIZE number of 0's to set up fusedata.X files with
 		int char_zero = '0';
@@ -703,7 +676,7 @@ void * jb_init(struct fuse_conn_info *conn)
 	} else { // fusedata.0 already exists (update the mounted variable in fusedata.0)
 		update_superblock();
 	}
-	return NULL;
+	return fuse_get_context()->private_data;
 }
 
 /* rmdir() and symlink() are unused in HW 2
@@ -762,8 +735,6 @@ static struct fuse_operations jb_oper = {
 
 int main(int argc, char *argv[])
 {
-	printf("IN MAIN\n");
-	// chdir(FILES_DIR); char* files_path = (char *) malloc(MAX_PATH); getcwd(files_path, MAX_PATH);
-	//char * pathname = realpath(argv[argc-1], NULL);
-	return fuse_main(argc, argv, &jb_oper, NULL); // files_path);
+	char *pathname = realpath(FILES_DIR, NULL);
+	return fuse_main(argc, argv, &jb_oper, pathname);
 }
