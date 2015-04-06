@@ -38,9 +38,16 @@
 #define MAX_NUM_BLOCKS 	10000	// number of blocks in the filesystem
 #define MAX_FILE_SIZE 	1638400	// max size in bytes of a file
 #define BLOCK_SIZE 		4096	// size in bytes of a block
+#define MAX_BLOCK_DIGITS	10	// the number of digits in MAX_NUM_BLOCKS won't exceed MAX_BLOCK_DIGITS-1
+#define MAX_PATH_LENGTH		100	// the number of chars a file's pathname could be
 
 // Other Constants
 #define FILES_DIR "/fusedata"	// directory to put fusedata.X files
+
+
+static const char *KATZ_str ="hi";
+static const char *KATZ_path = "/KATZz";
+
 
 /*
  * Return file attributes.
@@ -66,13 +73,38 @@
 */
 static int jb_getattr(const char *path, struct stat *stbuf)
 {
+/* previous code
 	int res;
-
 	res = lstat(path, stbuf);
 	if (res == -1)
 		return -errno;
-
-	return 0;
+	return res;
+*/
+	
+	int res;
+	res = 0;
+	memset(stbuf, 0, sizeof(struct stat));
+	if (strcmp(path, "/") == 0) {
+		stbuf->st_mode = S_IFDIR | 0755;
+		stbuf->st_nlink = 2;
+	} else if (strcmp(path, KATZ_path) == 0) {
+		stbuf->st_mode = S_IFREG | 0444;
+		stbuf->st_nlink = 1;
+		stbuf->st_size = strlen(KATZ_str);
+	} else if (strcmp(path, "/testing") == 0){ 
+		stbuf->st_mode = S_IFREG | 0444;
+		stbuf->st_nlink = 1;
+		stbuf->st_size = strlen("ht there")-3;
+	} else if(strcmp(path, "/fusedata.0") == 0) {
+		stbuf->st_mode = S_IFREG | 0444;
+		stbuf->st_nlink = 1;
+		stbuf->st_size = strlen("ht there")-3;
+	} else 
+		res = -ENOENT;
+// this puts the file attributes you want to show into the stat buffer
+// so ls can output it to the screen from there
+// this does not MAKE the file
+	return res;
 }
 
 /*
@@ -159,7 +191,7 @@ static inline struct jb_dirp *get_dirp(struct fuse_file_info *fi)
  * 	1)	readdir implementation ignores the offset parameter, and passes zero to the filler function's offset;
  * 		the filler function will not return '1' (unless an error happens), so the whole directory is read in a single readdir operation
  * 	2)	readdir implementation keeps track of the offsets of the directory entries;
- * 		it uses the offset parameter and always passes non'zero offset to the filler function;
+ * 		it uses the offset parameter and always passes non-zero offset to the filler function;
  * 		when the buffer is full (or an error happens) the filler function will return '1'
  * 
  * Somehwat like "read", in that it starts at a given offset and returns results in a caller-supplied buffer.
@@ -184,6 +216,15 @@ static inline struct jb_dirp *get_dirp(struct fuse_file_info *fi)
 static int jb_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		       off_t offset, struct fuse_file_info *fi)
 {
+	/* fuse_fill_dir_t(void *buf, const char *name, const struct stat *stbuf, off_t off)
+		buf:	the buffer passed to the readdir() operation
+		name:	the file name of the directory entry
+		stat:	file attributes, can be NULL
+		off:	offset of the next entry or zero
+	Function to add an entry in a readdir() operation
+	*/
+	
+	/* previous code
 	struct jb_dirp *d = get_dirp(fi);
 
 	(void) path;
@@ -214,6 +255,26 @@ static int jb_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	}
 
 	return 0;
+	*/
+
+	(void) offset;
+	(void) fi;
+
+	if (strcmp(path, "/") != 0)
+		return -ENOENT;
+
+	filler(buf, ".", NULL, 0);
+	filler(buf, "..", NULL, 0);
+	filler(buf, KATZ_path + 1, NULL, 0);
+	filler(buf, "/testing" + 1, NULL, 0);
+	filler(buf, "/fusedata.0" +1, NULL, 0);
+// the +1 is needed
+// this just shows entries here for each file
+// you're telling it the name of each file to show an entry for
+// this does not CREATE any entries
+
+	return 0;
+	
 }
 
 /* Release directory
@@ -375,6 +436,7 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 */
 static int jb_open(const char *path, struct fuse_file_info *fi)
 {
+	/* previous code
 	int fd;
 
 	fd = open(path, fi->flags);
@@ -383,6 +445,16 @@ static int jb_open(const char *path, struct fuse_file_info *fi)
 
 	fi->fh = fd;
 	return 0;
+	*/
+	
+// for every file here needs to check strcmp is okay
+	if (strcmp(path, KATZ_path) != 0 && strcmp(path, "/testing") !=0 && strcmp(path, "/fusedata.0")  !=0)
+		return -ENOENT;
+
+	if ((fi->flags & 3) != O_RDONLY)
+		return -EACCES;
+
+	return 0;	
 }
 
 /* Read data from an open file
@@ -407,6 +479,7 @@ static int jb_open(const char *path, struct fuse_file_info *fi)
 static int jb_read(const char *path, char *buf, size_t size, off_t offset,
 		    struct fuse_file_info *fi)
 {
+	/* previous code
 	int res;
 
 	(void) path;
@@ -415,6 +488,29 @@ static int jb_read(const char *path, char *buf, size_t size, off_t offset,
 		res = -errno;
 
 	return res;
+	*/
+	
+ 	const char* KATZ_strz="ht there";
+	size_t len;
+	(void) fi;
+	// for every file here needs to check strcmp is okay
+	if(strcmp(path, KATZ_path) != 0 && strcmp(path, "/testing") !=0 && strcmp(path, "/fusedata.0")  !=0)
+		return -ENOENT;
+
+	if(strcmp(path, "/testing")==0){
+		len = strlen(KATZ_strz);
+	} else {
+		len = strlen(KATZ_str);
+	}
+	if (offset < len) {
+		if (offset + size > len)
+			size = len - offset;
+			if((strcmp(path, "/testing")!=0)) { KATZ_strz=KATZ_str; }
+		memcpy(buf, KATZ_strz + offset, size);
+	} else
+		size = 0;
+
+	return size;
 }
 
 /* Write data to an open file
@@ -504,8 +600,35 @@ void jb_destroy(void *buf)
 */
 void * jb_init(struct fuse_conn_info *conn)
 {
-		
-		return NULL;
+	/* Undocumented but extraordinarly useful fact:
+		fuse_context is set up before this function is called;
+		fuse_get_context()->private_data returns the user_data passed to fuse_main().
+		Really seems like either it should be a third parameter coming in here, or else the fact should be documented.
+	*/
+	// setting a string with BLOCK_SIZE number of 0's to set up fusedata.X files with
+	int char_zero = '0';
+	char *buf = (char *) malloc(BLOCK_SIZE); // 4096 bytes to a file initially
+	memset(buf, char_zero, BLOCK_SIZE); // initialize buf to BLOCK_SIZE 0's
+	// setting up strings for fusedata.X to make strings for 'X' values
+	char *temp_str = (char *) malloc(MAX_BLOCK_DIGITS); // this will represent the 'X' in fusedata.X files
+	sprintf(temp_str, "%d", MAX_NUM_BLOCKS-1); // MAX_NUM_BLOCKS-1 because files go from fusedata.0 to fusedata.(MAX_NUM_BLOCKS-1)
+	char *fusedata_digit = (char *) malloc(strlen(temp_str)); // this will represent the 'X' in fusedata.X files
+	char *fusedata_str = malloc(MAX_PATH_LENGTH); // this will initially contain "fusedata."
+	// loop to create fusedata.X files and initialize them with 0's
+	chdir(FILES_DIR); // FILES_DIR is the directory where the fusedata.X files will be stored
+	int i;
+	for (i = 0; i < 1; ++i) {
+		sprintf(fusedata_digit, "%d", i); // fusedata_digit will hold from 0 --> MAX_NUM_BLOCKS-1
+		strcpy(fusedata_str, "fusedata."); // initialize fusedata_str to contain "fusedata." on every loop to concat the block number onto it
+		strcat(fusedata_str, fusedata_digit); // fusedata_str will now contain "fusedata.i" where 'i' goes up to MAX_NUM_BLOCKS-1
+		FILE *fd = fopen(fusedata_str, "w+"); // create the fusedata.X file
+		fwrite(buf, BLOCK_SIZE, 1, fd); // write BLOCK_SIZE bytes of buf into fd 1 time
+		fclose(fd);
+	}
+	
+	free(buf); free(temp_str); free(fusedata_digit); free(fusedata_str);
+	
+	return NULL;
 }
 
 /* rmdir() and symlink() are unused in HW 2
@@ -537,23 +660,23 @@ static int jb_symlink(const char *from, const char *to)
 static struct fuse_operations jb_oper = {
 	// Functions needed for Filesystem (Part 1)
 	.getattr	= jb_getattr,
-	.create		= jb_create,
+	//.create		= jb_create,
 	.open		= jb_open,
 	.read		= jb_read,
-	.write		= jb_write,
-	.statfs		= jb_statfs,
-	.release	= jb_release,
-	.destroy	= jb_destroy,
+	//.write		= jb_write,
+	//.statfs		= jb_statfs,
+	//.release	= jb_release,
+	//.destroy	= jb_destroy,
 	.init		= jb_init,
-	.link		= jb_link,
-	.mkdir		= jb_mkdir,
-	.opendir	= jb_opendir,
+	//.link		= jb_link,
+	//.mkdir		= jb_mkdir,
+	//.opendir	= jb_opendir,
 	.readdir	= jb_readdir,
-	.readlink	= jb_readlink,
-	.releasedir	= jb_releasedir,
-	.rename		= jb_rename,
-	.unlink		= jb_unlink,
-	// Functions needed for Filesystem (Part 1)
+	//.readlink	= jb_readlink,
+	//.releasedir	= jb_releasedir,
+	//.rename		= jb_rename,
+	//.unlink		= jb_unlink,
+	//// Functions needed for Filesystem (Part 1)
 	.flag_nullpath_ok = 0,
 	/* .flag_nullpath_ok
 	 * ------------------
@@ -565,5 +688,6 @@ static struct fuse_operations jb_oper = {
 int main(int argc, char *argv[])
 {
 	// chdir(FILES_DIR); char* files_path = (char *) malloc(MAX_PATH); getcwd(files_path, MAX_PATH);
-	return fuse_main(argc, argv, &jb_oper, NULL); // files_path);
+	char * pathname = realpath(argv[argc-1], NULL);
+	return fuse_main(argc, argv, &jb_oper, pathname); // files_path);
 }
