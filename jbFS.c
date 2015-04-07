@@ -40,13 +40,25 @@
 #define FREE_END		25		// end of the free block list (must be enough blocks between start and end to hold values representing MAX_NUM_BLOCKS)
 #define ROOT			26		// block for root dir
 #define BLOCKS_IN_FREE	400		// number of free blocks to store in the free block list files on filesystem creation
+#define UID				1		// user id (does not matter for this filesystem)
+#define GID				1		// group id (does not matter for this filesystem)
+
 
 // Other Constants
 #define FILES_DIR "/fusedata"	// directory to put fusedata.X files
+#define LOG_FILE "/home/joe/OS/filesystem/log.txt"	// log file
 
 
 static const char *KATZ_str ="hi";
 static const char *KATZ_path = "/KATZz";
+
+
+void logmsg(const char *s)
+{
+	FILE *f = fopen(LOG_FILE, "a");
+	fprintf(f, "%s\n\n", s); 
+	fclose(f);
+}
 
 
 // Return true if the passed in cstring is a file that exists; false otherwise
@@ -582,11 +594,27 @@ void jb_destroy(void *buf)
 
 }
 
+// takes in a buffer with data already in it and writes it to the file stream, returning a non-zero error value if the buffer contents were not fully written
+static int write_to_file(char *buf, FILE *file_stream)
+{
+	// write 1 entry of strlen(buf) size bytes from buf to the file_stream (if 1 entry of that size bytes was not written, there was an error)
+	if ( fwrite(buf, strlen(buf), 1, file_stream) != 1 ) {
+		return -errno;
+	}
+	return 0;
+}
+
 // Create the super-block (fusedata.0)
-void create_superblock(char *buf)
+static int create_superblock(char *buf)
 {
 	FILE *superblock = fopen("fusedata.0", "w+");
-	fwrite(buf, BLOCK_SIZE, 1, superblock); // fill superblock with 0's initially
+	if (!superblock) {
+		return -errno;
+	}
+	// fill superblock with 0's initially
+	if ( write_to_file(buf, superblock) != 0 ) {
+		return -errno;
+	}
 	rewind(superblock); // set position indicator of file stream to the beginning of the file
 	
 	// get creation time of this filesystem in reference to the Epoch
@@ -602,29 +630,42 @@ void create_superblock(char *buf)
 	 * maxblocks is arbitrary but was set to 10000 at first creation of this block OS
 	*/	
 	// mounted:1 because this is the first mount; freeStart, freeEnd, root, and maxBlocks will be defined constants for each new creation of a filesystem
-	fprintf(superblock, "{creationTime: %s, mounted: 1, devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
+	char *data = (char *) malloc(MAX_FILE_SIZE);
+	sprintf(data, "{creationTime: %s, mounted: 1, devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
+	
+	if ( write_to_file(data, superblock) != 0 ) {
+		free(creation_time_str); free(data); fclose(superblock);
+		return -errno;
+	}
 
 	fclose(superblock);
 
-	free(creation_time_str);
+	free(creation_time_str); free(data);
+	
+	return 0;
 }
 
 // Set up comma separated values of free blocks after root
-void create_free_block_list(char *fusedata_digit, char *fusedata_str, unsigned int fusedata_digit_len)
+static int create_free_block_list(char *fusedata_digit, char *fusedata_str, unsigned int fusedata_digit_len)
 {
 	// the first block containing the free block list is a special case because it must not include the superblock, the blocks containing the free block list, or root
 	sprintf(fusedata_digit, "%d", FREE_START); // fusedata_digit will hold the digit of the first block that holds the free block list
 	strcpy(fusedata_str, "fusedata."); // initialize fusedata_str to contain "fusedata."
 	strcat(fusedata_str, fusedata_digit); // fusedata_str will now contain "fusedata.i" where 'i' is a digit of a block that holds the free block list
-	FILE *free_start_file = fopen(fusedata_str, "r+"); // create the fusedata.X file
-	char *free_block_str = (char *) malloc(fusedata_digit_len);
-	// incremenet over 'i' up to BLOCKS_IN_FREE - 1 to write that free block to the free block list
-	int i;
-	for (i = ROOT + 1; i < BLOCKS_IN_FREE - 1; ++i) {
-		fprintf(free_start_file, "%u,", i);
+	FILE *free_start_file = fopen(fusedata_str, "r+"); // create the fusedata.FREE_START file
+	if (!free_start_file) {
+		return -errno;
 	}
-	// got up to block BLOCKS_IN_FREE - 1, so write that to the file but do not add a comma to the end of it since this is the last free block
-	fprintf(free_start_file, "%u", i);
+	char *data = (char *) malloc(MAX_FILE_SIZE);
+	// increment over 'i' up to BLOCKS_IN_FREE - 1 to write that free block to the free block list
+	int i;
+	for (i = ROOT + 1; i < BLOCKS_IN_FREE; ++i) {
+		sprintf(data, "%u,", i);
+		if ( write_to_file(data, free_start_file) != 0 ) {
+			free(data); fclose(free_start_file);
+			return -errno;
+		}
+	}
 	fclose(free_start_file);
 	// every block after the starting one has BLOCKS_IN_FREE free blocks per block
 	FILE *free_block_file;
@@ -637,44 +678,97 @@ void create_free_block_list(char *fusedata_digit, char *fusedata_str, unsigned i
 		strcat(fusedata_str, fusedata_digit);
 		// open the fusedata.X file for reading and writing
 		free_block_file = fopen(fusedata_str, "r+");
-		// continue incrementing 'i' because 'i' left off where the next free block list should start
-		for (++i; i < BLOCKS_IN_FREE * j; ++i) {
-			fprintf(free_block_file, "%u,", i);
+		if (!free_block_file) {
+			return -errno;
 		}
-		// don't add the extra comma to the end last free block for the file
-		fprintf(free_block_file, "%u", i);
+		// continue incrementing 'i' because 'i' left off where the next free block list should start
+		for ( ; i < BLOCKS_IN_FREE * j; ++i) {
+			sprintf(data, "%u,", i);
+			if ( write_to_file(data, free_block_file) != 0 ) {
+				free(data); fclose(free_block_file);
+				return -errno;
+			}
+		}
 		fclose(free_block_file);
 	}
+	
+	return 0;
 }
 
 // Set up the root directory's initial structure
-void create_root(char *fusedata_digit, char *fusedata_str))
+static int create_root(char *fusedata_digit, char *fusedata_str)
 {
+	// open the root directory block file
+	sprintf(fusedata_digit, "%d", ROOT);
+	strcpy(fusedata_str, "fusedata.");
+	strcat(fusedata_str, fusedata_digit);
+	FILE *root_file = fopen(fusedata_str, "r+"); // open the fusedata.ROOT file
+	if (!root_file) {
+		return -errno;
+	}
+	char *data = (char *) malloc(MAX_FILE_SIZE);
+	char *creation_time_str = (char *) malloc(20); // For 2014, time since Epoch would be 10 digits (so 20 possible digits is okay for now)
+	sprintf(creation_time_str, "%lu", time(NULL)); // put the an unsigned int representing time directly into the creation_time_str string
+	/* format of root-block:
+	 * {size:0, uid:1, gid:1, mode:16877, atime:1323630836, ctime:1323630836, mtime:1323630836, linkcount:2, filename_to_inode_dict: {d:.:26,d:..:26}}
+	 * 
+	 * size is initially 0, uid, gid, & mode will not change for this filesystem;
+	 * atime (access time), ctime (inode or file change time), mtime (file modification time) are all the same when root is initialized;
+	 * linkcount is 2 because '.' and '..' point to root, and filename_to_inode_dict denotes the links to inodes root has stored
+	*/	
+	sprintf(data, "{size:0, uid:%d, gid:%d, mode:16877, atime:%s, ctime:%s, mtime:%s, linkcount:2, filename_to_inode_dict: {d:.:%d,d:..:%d}}", UID, GID, creation_time_str, creation_time_str, creation_time_str, ROOT, ROOT);
+	if ( write_to_file(data, root_file) != 0 ) {
+		logmsg("FAILURE IN create_root");
+		free(data); free(creation_time_str); fclose(root_file);
+		return -errno;
+	}
 	
+	return 0;
 }
 
 // Creates fusedata.1 to fusedata.X blocks (X is MAX_NUM_BLOCKS-1)
-void create_blocks(char *buf, char *fusedata_digit, char *fusedata_str, unsigned int fusedata_digit_len)
+static int create_blocks(char *buf, char *fusedata_digit, char *fusedata_str, unsigned int fusedata_digit_len)
 {	
-	for (i = 1; i < MAX_NUM_BLOCKS; ++i) {
+	int i;
+	for (i = 1; i < 50; ++i) {
 		sprintf(fusedata_digit, "%d", i); // fusedata_digit will hold from 0 --> MAX_NUM_BLOCKS-1
 		strcpy(fusedata_str, "fusedata."); // initialize fusedata_str to contain "fusedata." on every loop to concat the block number onto it
 		strcat(fusedata_str, fusedata_digit); // fusedata_str will now contain "fusedata.i" where 'i' goes up to MAX_NUM_BLOCKS-1
 		FILE *fd = fopen(fusedata_str, "w+"); // create the fusedata.X file
-		fwrite(buf, BLOCK_SIZE, 1, fd); // write BLOCK_SIZE bytes of buf into fd 1 time
+		if (!fd) {
+			return -errno;
+		}
+		if ( write_to_file(buf, fd) != 0 ) {
+			fclose(fd);
+			return -errno;
+		}
 		fclose(fd);
 	}
-	 // create the free block list
-	 create_free_block_list(fusedata_digit, fusedata_str, fusedata_digit_len);
-	 // create root
-	 create_root(fusedata_digit, fusedata_str);
+
+	logmsg("about to create free block list");
+	// create the free block list
+	if ( create_free_block_list(fusedata_digit, fusedata_str, fusedata_digit_len) != 0 ) {
+		logmsg("FAILURE IN create_free_block_list so could not get to create_root");
+		return -errno;
+	}
+	logmsg("about to create root");
+	// create root
+	if ( create_root(fusedata_digit, fusedata_str) != 0 ) {
+		logmsg("ROOT DATA FAILED\n");
+		return -errno;
+	}
+
+	return 0;
 }
 
 // Essentially just updates the number of times mounted and writes that back to the fusedata.0 file
-void update_superblock()
+static int update_superblock()
 {
 	char *temp = (char *) malloc(MAX_FILE_SIZE); // used to store string values that are already known and thus just need to pass over in the file stream
 	FILE *superblock = fopen("fusedata.0", "r+"); // open the super-block with read + write permissions (but don't overwrite the file)
+	if (!superblock) {
+		return -errno;
+	}
 	char *creation_time_str = (char *) malloc(20); // For 2014, time since Epoch would be 10 digits (so 20 possible digits is okay for now)
 	unsigned int mount_num;
 	// we know certain contents in the file such as "{creationTime:", "mounted:", "devId:", "20,", "freeStart:", "1,", etc... so just put those in temp
@@ -683,11 +777,18 @@ void update_superblock()
 	mount_num++; // increment the number of times mounted since the filesystem is being mounted again
 	rewind(superblock); // point the file stream back to the beginning to overwrite the data with the new mount number
 	// the %s for the actual created time was scanned as a string so the ',' char following it is also put into creation_time_str
-	fprintf(superblock, "{creationTime: %s mounted: %u devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, mount_num, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
+	sprintf(temp, "{creationTime: %s mounted: %u devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, mount_num, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
+	if ( write_to_file(temp, superblock) != 0) {
+		free(temp); free(creation_time_str); fclose(superblock);
+		return -errno;
+	}
+	//fprintf(superblock, "{creationTime: %s mounted: %u devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, mount_num, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
 	
 	fclose(superblock);
 	
-	free(temp);
+	free(temp); free(creation_time_str);
+	
+	return 0;
 }
 
 /* Initialize filesystem
@@ -706,6 +807,7 @@ void * jb_init(struct fuse_conn_info *conn)
 	*/
 	chdir(fuse_get_context()->private_data); // FILES_DIR is the directory where the fusedata.X files will be located
 	if (!file_exists("fusedata.0")) {
+		logmsg("fusedata.0 did not exist");
 		// setting a string with BLOCK_SIZE number of 0's to set up fusedata.X files with
 		int char_zero = '0';
 		char *buf = (char *) malloc(BLOCK_SIZE); // 4096 bytes to a file initially
@@ -714,45 +816,32 @@ void * jb_init(struct fuse_conn_info *conn)
 		char *temp_str = (char *) malloc(MAX_BLOCK_DIGITS); // this will represent the 'X' in fusedata.X files
 		sprintf(temp_str, "%d", MAX_NUM_BLOCKS-1); // MAX_NUM_BLOCKS-1 because files go from fusedata.0 to fusedata.(MAX_NUM_BLOCKS-1)
 		unsigned int fusedata_digit_len = strlen(temp_str); // largest possible char length to represent MAX_NUM_BLOCKS as a string
-		char *fusedata_digit = (char *) malloc(fusedata_digit_len)); // this will represent the 'X' in fusedata.X files
+		char *fusedata_digit = (char *) malloc(fusedata_digit_len); // this will represent the 'X' in fusedata.X files
 		char *fusedata_str = malloc(MAX_PATH_LENGTH); // this will initially contain "fusedata."
 		// create super-block (fusedata.0)
-		create_superblock(buf);
+		if ( create_superblock(buf) != 0) {
+			// ERROR --> exit
+			logmsg("WHY AM I IN HERE???");
+			exit(1);
+		}
 		// create fusedata.X blocks
-		create_blocks(buf, fusedata_digit, fusedata_str, fusedata_digit_len);
+		if ( create_blocks(buf, fusedata_digit, fusedata_str, fusedata_digit_len) != 0 ) {
+			// ERROR --> exit
+			logmsg("ERROR IN CREATE_BLOCKS INIT");
+			exit(1);
+		}
 		
 		free(buf); free(temp_str); free(fusedata_digit); free(fusedata_str);		
 	} else { // fusedata.0 already exists (update the mounted variable in fusedata.0)
-		update_superblock();
+		logmsg("fusedata.0 DID exist");
+		if ( update_superblock() != 0 ) {
+			// ERROR --> exit
+			exit(1);
+		}
 	}
 	return fuse_get_context()->private_data;
 }
 
-/* rmdir() and symlink() are unused in HW 2
-// NOT A NECESSARY FUNCTION TO CREATE FOR PROJECT ?????????????????????
-static int jb_rmdir(const char *path)
-{
-	int res;
-
-	res = rmdir(path);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-// NOT A NECESSARY FUNCTION TO CREATE FOR PROJECT ?????????????????????
-static int jb_symlink(const char *from, const char *to)
-{
-	int res;
-
-	res = symlink(from, to);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-*/
 
 static struct fuse_operations jb_oper = {
 	// Functions needed for Filesystem (Part 1)
@@ -769,7 +858,6 @@ static struct fuse_operations jb_oper = {
 	//.mkdir		= jb_mkdir,
 	//.opendir	= jb_opendir,
 	.readdir	= jb_readdir,
-	//.readlink	= jb_readlink,
 	//.releasedir	= jb_releasedir,
 	//.rename		= jb_rename,
 	//.unlink		= jb_unlink,
