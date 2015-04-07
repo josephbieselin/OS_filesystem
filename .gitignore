@@ -5,4 +5,5 @@ jabFS
 jabFS.c
 log.txt
 log.txt~
+.gitignore~
 

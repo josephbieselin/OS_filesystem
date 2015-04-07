@@ -70,6 +70,17 @@ int file_exists(const char* name)
 	return status == 0;
 }
 
+// takes in a buffer with data already in it and writes it to the file stream, returning a non-zero error value if the buffer contents were not fully written
+static int write_to_file(char *buf, FILE *file_stream)
+{
+	// write 1 entry of strlen(buf) size bytes from buf to the file_stream (if 1 entry of that size bytes was not written, there was an error)
+	if ( fwrite(buf, strlen(buf), 1, file_stream) != 1 ) {
+		logmsg("FAILURE:\twrite_to_file\tfwrite");
+		return -errno;
+	}
+	return 0;
+}
+
 
 /*
  * Return file attributes.
@@ -594,16 +605,6 @@ void jb_destroy(void *buf)
 
 }
 
-// takes in a buffer with data already in it and writes it to the file stream, returning a non-zero error value if the buffer contents were not fully written
-static int write_to_file(char *buf, FILE *file_stream)
-{
-	// write 1 entry of strlen(buf) size bytes from buf to the file_stream (if 1 entry of that size bytes was not written, there was an error)
-	if ( fwrite(buf, strlen(buf), 1, file_stream) != 1 ) {
-		return -errno;
-	}
-	return 0;
-}
-
 // Create the super-block (fusedata.0)
 static int create_superblock(char *buf)
 {
@@ -613,6 +614,7 @@ static int create_superblock(char *buf)
 	}
 	// fill superblock with 0's initially
 	if ( write_to_file(buf, superblock) != 0 ) {
+		logmsg("FAILURE:\tcreate_superblock\twrite_to_file\tbuf");
 		return -errno;
 	}
 	rewind(superblock); // set position indicator of file stream to the beginning of the file
@@ -634,6 +636,7 @@ static int create_superblock(char *buf)
 	sprintf(data, "{creationTime: %s, mounted: 1, devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
 	
 	if ( write_to_file(data, superblock) != 0 ) {
+		logmsg("FAILURE:\tcreate_superblock\twrite_to_file\tdata");
 		free(creation_time_str); free(data); fclose(superblock);
 		return -errno;
 	}
@@ -662,6 +665,7 @@ static int create_free_block_list(char *fusedata_digit, char *fusedata_str, unsi
 	for (i = ROOT + 1; i < BLOCKS_IN_FREE; ++i) {
 		sprintf(data, "%u,", i);
 		if ( write_to_file(data, free_start_file) != 0 ) {
+			logmsg("FAILURE:\tcreate_free_block_list\twrite_to_file\tfree_start_file");
 			free(data); fclose(free_start_file);
 			return -errno;
 		}
@@ -685,6 +689,7 @@ static int create_free_block_list(char *fusedata_digit, char *fusedata_str, unsi
 		for ( ; i < BLOCKS_IN_FREE * j; ++i) {
 			sprintf(data, "%u,", i);
 			if ( write_to_file(data, free_block_file) != 0 ) {
+				logmsg("FAILURE:\tcreate_free_block_list\twrite_to_file\tfree_block_file");
 				free(data); fclose(free_block_file);
 				return -errno;
 			}
@@ -718,7 +723,7 @@ static int create_root(char *fusedata_digit, char *fusedata_str)
 	*/	
 	sprintf(data, "{size:0, uid:%d, gid:%d, mode:16877, atime:%s, ctime:%s, mtime:%s, linkcount:2, filename_to_inode_dict: {d:.:%d,d:..:%d}}", UID, GID, creation_time_str, creation_time_str, creation_time_str, ROOT, ROOT);
 	if ( write_to_file(data, root_file) != 0 ) {
-		logmsg("FAILURE IN create_root");
+		logmsg("FAILURE:\tcreate_root\twrite_to_file");
 		free(data); free(creation_time_str); fclose(root_file);
 		return -errno;
 	}
@@ -730,7 +735,7 @@ static int create_root(char *fusedata_digit, char *fusedata_str)
 static int create_blocks(char *buf, char *fusedata_digit, char *fusedata_str, unsigned int fusedata_digit_len)
 {	
 	int i;
-	for (i = 1; i < 50; ++i) {
+	for (i = 1; i < MAX_NUM_BLOCKS; ++i) {
 		sprintf(fusedata_digit, "%d", i); // fusedata_digit will hold from 0 --> MAX_NUM_BLOCKS-1
 		strcpy(fusedata_str, "fusedata."); // initialize fusedata_str to contain "fusedata." on every loop to concat the block number onto it
 		strcat(fusedata_str, fusedata_digit); // fusedata_str will now contain "fusedata.i" where 'i' goes up to MAX_NUM_BLOCKS-1
@@ -745,16 +750,14 @@ static int create_blocks(char *buf, char *fusedata_digit, char *fusedata_str, un
 		fclose(fd);
 	}
 
-	logmsg("about to create free block list");
 	// create the free block list
 	if ( create_free_block_list(fusedata_digit, fusedata_str, fusedata_digit_len) != 0 ) {
-		logmsg("FAILURE IN create_free_block_list so could not get to create_root");
+		logmsg("FAILURE:\tcreate_blocks\tcreate_free_blocklist");
 		return -errno;
 	}
-	logmsg("about to create root");
 	// create root
 	if ( create_root(fusedata_digit, fusedata_str) != 0 ) {
-		logmsg("ROOT DATA FAILED\n");
+		logmsg("FAILURE:\tcreate_blocks\tcreate_root");
 		return -errno;
 	}
 
@@ -779,6 +782,7 @@ static int update_superblock()
 	// the %s for the actual created time was scanned as a string so the ',' char following it is also put into creation_time_str
 	sprintf(temp, "{creationTime: %s mounted: %u devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, mount_num, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
 	if ( write_to_file(temp, superblock) != 0) {
+		logmsg("FAILURE:\tupdate_superblock\twrite_to_file");
 		free(temp); free(creation_time_str); fclose(superblock);
 		return -errno;
 	}
@@ -807,7 +811,6 @@ void * jb_init(struct fuse_conn_info *conn)
 	*/
 	chdir(fuse_get_context()->private_data); // FILES_DIR is the directory where the fusedata.X files will be located
 	if (!file_exists("fusedata.0")) {
-		logmsg("fusedata.0 did not exist");
 		// setting a string with BLOCK_SIZE number of 0's to set up fusedata.X files with
 		int char_zero = '0';
 		char *buf = (char *) malloc(BLOCK_SIZE); // 4096 bytes to a file initially
@@ -820,21 +823,21 @@ void * jb_init(struct fuse_conn_info *conn)
 		char *fusedata_str = malloc(MAX_PATH_LENGTH); // this will initially contain "fusedata."
 		// create super-block (fusedata.0)
 		if ( create_superblock(buf) != 0) {
+			logmsg("FAILURE:\tjb_init\tcreate_superblock");
 			// ERROR --> exit
-			logmsg("WHY AM I IN HERE???");
 			exit(1);
 		}
 		// create fusedata.X blocks
 		if ( create_blocks(buf, fusedata_digit, fusedata_str, fusedata_digit_len) != 0 ) {
+			logmsg("FAILURE:\tjb_init\tcreate_blocks");
 			// ERROR --> exit
-			logmsg("ERROR IN CREATE_BLOCKS INIT");
 			exit(1);
 		}
 		
 		free(buf); free(temp_str); free(fusedata_digit); free(fusedata_str);		
 	} else { // fusedata.0 already exists (update the mounted variable in fusedata.0)
-		logmsg("fusedata.0 DID exist");
 		if ( update_superblock() != 0 ) {
+			logmsg("FAILURE:\tjb_init\tupdate_superblock");
 			// ERROR --> exit
 			exit(1);
 		}
