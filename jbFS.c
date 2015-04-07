@@ -728,6 +728,8 @@ static int create_root(char *fusedata_digit, char *fusedata_str)
 		return -errno;
 	}
 	
+	fclose(root_file);
+	
 	return 0;
 }
 
