@@ -81,6 +81,126 @@ static int write_to_file(char *buf, FILE *file_stream)
 	return 0;
 }
 
+// removes the next free block from the file and returns 0 upon success
+static int remove_next_free_block(unsigned int next_free_block, FILE *fd)
+{
+	rewind(fd);
+	unsigned int next_free_block_len;
+	char *next_free_block_str = (char *) malloc(MAX_FILE_SIZE);
+	sprintf(next_free_block_str, "%u", next_free_block);
+	next_free_block_len = strlen(next_free_block_str);
+	char *buf = (char *) malloc(MAX_FILE_SIZE);
+	char temp[MAX_FILE_SIZE];
+	// put the next free block that will be removed along with the comma following it into temp, then put the remaining contents of the file in buf
+	fscanf(fd, "%u %c %s", temp, temp, buf);
+	int i;
+	for (i = 0; i <= next_free_block_len; ++i) {
+		strcat(buf, "0"); // append 0's to the contents of the file to replace the free block number and the comma following it
+	}
+	rewind(fd);
+	if ( write_to_file(buf, fd) != 0 ) {
+		logmsg("FAILURE:\tremove_next_free_block\twrite_to_file");
+		free(next_free_block_str); free(buf);
+		return -1;
+	}
+	// the next free block was successfully removed and the free file list block was updated
+	free(next_free_block_str); free(buf);
+	return 0;
+	
+}
+
+// returns an int that is the number of the next free block; if there are no free blocks, return -1
+static int next_free_block()
+{
+	int i;
+	unsigned int next_free_block;
+	char *fusedata_str = (char *) malloc(MAX_PATH_LENGTH);
+	FILE *free_block_file;
+	for (i = FREE_START; i <= FREE_END; ++i) {
+		// append the number of the start of the free block list file and then open it
+		sprintf(fusedata_str, "fusedata.%d", i);
+		free_block_file = fopen(fusedata_str, "r+");
+		fscanf(free_block_file, "%u", next_free_block);
+		// if the next number from the file is not 0, we have found the next free block
+		if (next_free_block != 0) {
+			// remove the free block from the list since it will be used
+			if (remove_next_free_block(next_free_block) != 0) {
+				logmsg("FAILURE:\tnext_free_block\tremove_next_free_block");
+				free(fusedata_str); fclose(free_block_file);
+				return -1; // there was an error in removing the next free block from the list
+			}
+			free(fusedata_str); fclose(free_block_file);
+			return next_free_block;
+		}
+	}
+	free(fusedata_str); fclose(free_block_file);
+	// there were no free blocks so return -1
+	return -1;
+}
+
+// adds the free block number back to the appropriate free block list file and returns 0 upon success
+static int add_free_block(unsigned int free_block_num)
+{
+	// get the free block file number that the free block should go back into and open that file
+	unsigned int free_block_file_num = free_block_num / BLOCKS_IN_FREE;
+	free_block_file_num++;
+
+	char *fusedata_str = (char *) malloc(MAX_PATH_LENGTH);
+	sprintf(fusedata_str, "fusedata.%u", free_block_file_num);
+	FILE *free_block_file = fopen(fusedata_str, "r+");
+	free(fusedata_str);
+
+	char *temp = (char *) malloc(MAX_FILE_SIZE);
+	char *buf = (char *) malloc(MAX_FILE_SIZE);
+	
+	// get the entire contents of the free block file
+	fread(temp, MAX_FILE_SIZE, 1, free_block_file);
+	rewind(free_block_file);
+
+	// tokenize the file contents by commas
+	buf = strtok(temp, ",");
+	// if the file was all 0's, just add the free_block_num along with a comma to the beginning
+	if (strlen(buf) == MAX_FILE_SIZE) {
+		sprintf(buf, "%u,", free_block_num);
+		if ( write_to_file(buf, free_block_file) != 0) {
+			free(temp); free(buf); fclose(free_block_file);
+			logmsg("FAILURE:\tadd_free_block\tALL 0'S\twrite_to_file");
+			return -1;
+		}
+		free(temp); free(buf); fclose(free_block_file);
+		return 0;
+	} else { // get the current list of free blocks and append the new free_block_num along with a comma and write them back to the file
+		char *new_file_content = (char *) malloc(MAX_FILE_SIZE);
+		strcat(new_file_content, buf);
+		strcat(new_file_content, ",");
+		unsigned int some_free_block;
+		// keep getting free block numbers until the end of the file's content
+		while( buf != NULL ) {
+			// turn the number into an int to test if it is just a 0
+			some_free_block = atoi(buf);
+			// if it's not a 0, add it the string that will be written back to the file
+			if (some_free_block != 0) {
+				strcat(new_file_content, buf);
+				strcat(new_file_content, ",");
+			}
+			// get the next comma delimited value
+			buf = strtok(NULL, ",");
+		}
+		// put the new free_block_num along with a comma at the end of free block list in this file
+		sprintf(temp, "%u,", free_block_num);
+		strcat(new_file_content, temp);
+		// overwrite the contents in the file which will then include the new free_block_num and a comma at the end
+		if ( write_to_file(new_file_content, free_block_file) != 0 ) {
+			free(temp); free(buf); fclose(free_block_file);
+			logmsg("FAILURE:\tadd_free_block\tNOT all 0'S\twrite_to_file");
+			return -1;
+		}
+		free(temp); free(buf); free(new_file_content); fclose(free_block_file);
+		return 0;
+	}
+}
+
+
 
 /*
  * Return file attributes.
@@ -428,7 +548,20 @@ static int jb_link(const char *from, const char *to)
 static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	int fd;
-
+	
+	// get the 2 free blocks for the inode and actual file; if there isn't enough inodes, return an error
+	int inode_block = next_free_block();
+	if (inode_block == -1) {
+		errno = EDQUOT; // all available free blocks are used up
+		return -errno;
+	}
+	int file_block = next_free_block();
+	if (file_block == -1) {
+		errno = EDQUOT; // all available free blocks are used up
+		add_free_block(inode_block); // inode_block was removed from the free block list, but since there isn't room to for the file block, the inode_block should be put back as free
+		return -errno;
+	}
+	
 	fd = open(path, fi->flags, mode);
 	if (fd == -1)
 		return -errno;
@@ -578,7 +711,7 @@ static int jb_statfs(const char *path, struct statvfs *stbuf)
 }
 
 /* Release an open file (called when there are no more references to an open file: all file descriptors are closed and all memory mappings are unmapped)
- * For every open() call there will be exactly one release() call with the sanem flags and file descriptor.
+ * For every open() call there will be exactly one release() call with the same flags and file descriptor.
  * It is possible to have a file opened more than once, in which case only the last release will mean, that no more reads/writes will happen on the file.
  * 
  * No direct corresponding system call ("close" is related).
