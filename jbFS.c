@@ -81,100 +81,39 @@ static int write_to_file(char *buf, FILE *file_stream)
 	return 0;
 }
 
-// removes the next free block from the file and returns 0 upon success
-static int remove_next_free_block(unsigned int next_free_block, FILE *fd)
-{
-	rewind(fd);
-	unsigned int next_free_block_len;
-	char *next_free_block_str = (char *) malloc(MAX_FILE_SIZE);
-	sprintf(next_free_block_str, "%u", next_free_block);
-	next_free_block_len = strlen(next_free_block_str);
-	char *buf = (char *) malloc(MAX_FILE_SIZE);
-	char temp[MAX_FILE_SIZE];
-	// put the next free block that will be removed along with the comma following it into temp, then put the remaining contents of the file in buf
-	fscanf(fd, "%u %c %s", temp, temp, buf);
-	int i;
-	for (i = 0; i <= next_free_block_len; ++i) {
-		strcat(buf, "0"); // append 0's to the contents of the file to replace the free block number and the comma following it
-	}
-	rewind(fd);
-	if ( write_to_file(buf, fd) != 0 ) {
-		logmsg("FAILURE:\tremove_next_free_block\twrite_to_file");
-		free(next_free_block_str); free(buf);
-		return -1;
-	}
-	// the next free block was successfully removed and the free file list block was updated
-	free(next_free_block_str); free(buf);
-	return 0;
-	
-}
-
-// returns an int that is the number of the next free block; if there are no free blocks, return -1
-static int next_free_block()
-{
-	int i;
-	unsigned int next_free_block;
-	char *fusedata_str = (char *) malloc(MAX_PATH_LENGTH);
-	FILE *free_block_file;
-	for (i = FREE_START; i <= FREE_END; ++i) {
-		// append the number of the start of the free block list file and then open it
-		sprintf(fusedata_str, "fusedata.%d", i);
-		free_block_file = fopen(fusedata_str, "r+");
-		fscanf(free_block_file, "%u", next_free_block);
-		// if the next number from the file is not 0, we have found the next free block
-		if (next_free_block != 0) {
-			// remove the free block from the list since it will be used
-			if (remove_next_free_block(next_free_block) != 0) {
-				logmsg("FAILURE:\tnext_free_block\tremove_next_free_block");
-				free(fusedata_str); fclose(free_block_file);
-				return -1; // there was an error in removing the next free block from the list
-			}
-			free(fusedata_str); fclose(free_block_file);
-			return next_free_block;
-		}
-	}
-	free(fusedata_str); fclose(free_block_file);
-	// there were no free blocks so return -1
-	return -1;
-}
-
 // adds the free block number back to the appropriate free block list file and returns 0 upon success
 static int add_free_block(unsigned int free_block_num)
 {
 	// get the free block file number that the free block should go back into and open that file
 	unsigned int free_block_file_num = free_block_num / BLOCKS_IN_FREE;
 	free_block_file_num++;
-
-	char *fusedata_str = (char *) malloc(MAX_PATH_LENGTH);
+	// open the fusedata.X file associated with the free block number passed
+	char *fusedata_str = (char *) calloc(1, MAX_PATH_LENGTH);
 	sprintf(fusedata_str, "fusedata.%u", free_block_file_num);
 	FILE *free_block_file = fopen(fusedata_str, "r+");
-	free(fusedata_str);
-
-	char *temp = (char *) malloc(MAX_FILE_SIZE);
-	char *buf = (char *) malloc(MAX_FILE_SIZE);
-	
-	// get the entire contents of the free block file
-	fread(temp, MAX_FILE_SIZE, 1, free_block_file);
+	// set up some variables
+	char *temp = (char *) calloc(1, BLOCK_SIZE);
+	char *buf;  // = (char *) calloc(1, BLOCK_SIZE); // free(buf) not needed because strtok passes back a pointer to the contents of the string being tokenized
+	// get the entire contents of the free block file into a temp variable
+	fread(temp, BLOCK_SIZE, 1, free_block_file);
 	rewind(free_block_file);
-
 	// tokenize the file contents by commas
 	buf = strtok(temp, ",");
 	// if the file was all 0's, just add the free_block_num along with a comma to the beginning
-	if (strlen(buf) == MAX_FILE_SIZE) {
-		sprintf(buf, "%u,", free_block_num);
-		if ( write_to_file(buf, free_block_file) != 0) {
-			free(temp); free(buf); fclose(free_block_file);
-			logmsg("FAILURE:\tadd_free_block\tALL 0'S\twrite_to_file");
+	if (strlen(buf) == BLOCK_SIZE) {
+		char *free_block_num_str = (char *) calloc(1, BLOCK_SIZE);
+		sprintf(free_block_num_str, "%u,", free_block_num);
+		if ( write_to_file(free_block_num_str, free_block_file) != 0) {
+			free(temp); free(free_block_num_str); free(fusedata_str); fclose(free_block_file);
+			printf("FAILURE:\tadd_free_block\tstrlen(buf)==BLOCK_SIZE\twrite_to_file");
 			return -1;
 		}
-		free(temp); free(buf); fclose(free_block_file);
+		free(temp); free(free_block_num_str); free(fusedata_str); fclose(free_block_file);
 		return 0;
-	} else { // get the current list of free blocks and append the new free_block_num along with a comma and write them back to the file
-		char *new_file_content = (char *) malloc(MAX_FILE_SIZE);
-		strcat(new_file_content, buf);
-		strcat(new_file_content, ",");
+	} else {
+		// new_file_content will contain all previous blocks in the free block list plus the new number passed in
+		char *new_file_content = (char *) calloc(1, BLOCK_SIZE);
 		unsigned int some_free_block;
-		// keep getting free block numbers until the end of the file's content
 		while( buf != NULL ) {
 			// turn the number into an int to test if it is just a 0
 			some_free_block = atoi(buf);
@@ -183,25 +122,98 @@ static int add_free_block(unsigned int free_block_num)
 				strcat(new_file_content, buf);
 				strcat(new_file_content, ",");
 			}
-			// get the next comma delimited value
+			// get the next value in between commas
 			buf = strtok(NULL, ",");
 		}
 		// put the new free_block_num along with a comma at the end of free block list in this file
 		sprintf(temp, "%u,", free_block_num);
 		strcat(new_file_content, temp);
-		// overwrite the contents in the file which will then include the new free_block_num and a comma at the end
 		if ( write_to_file(new_file_content, free_block_file) != 0 ) {
-			free(temp); free(buf); fclose(free_block_file);
-			logmsg("FAILURE:\tadd_free_block\tNOT all 0'S\twrite_to_file");
+			free(temp); free(buf); free(new_file_content); free(fusedata_str); fclose(free_block_file);
+			printf("FAILURE:\tadd_free_block\telse statement\twrite_to_file");
 			return -1;
 		}
-		free(temp); free(buf); free(new_file_content); fclose(free_block_file);
+		free(temp); free(buf); free(new_file_content); free(fusedata_str); fclose(free_block_file);
 		return 0;
 	}
 }
 
+// removes the next free block from the file and returns 0 upon success
+static int remove_next_free_block(unsigned int next_free_block, char *buf, FILE *fd)
+{
+	rewind(fd);
+	// get the length of digits of the first free block number in the file
+	unsigned int next_free_block_len;
+	char *next_free_block_str = (char *) calloc(1, BLOCK_SIZE);
+	sprintf(next_free_block_str, "%u", next_free_block);
+	next_free_block_len = strlen(next_free_block_str);
+	// append 0's to the contents of the file to replace the length of the free block number and the comma following it
+	int i;
+	for (i = 0; i <= next_free_block_len; ++i) {
+		strcat(buf, "0");
+	}
+	// put the buffer without the removed free block back into the file
+	if ( write_to_file(buf, fd) != 0 ) {
+		logmsg("FAILURE:\tremove_next_free_block\twrite_to_file");
+		free(next_free_block_str);
+		return -1;
+	}
+	// the next free block was successfully removed and the free file list block was updated
+	free(next_free_block_str);
+	rewind(fd);
+	return 0;
+}
 
-
+// returns an int that is the number of the next free block; if there are no free blocks, return -1
+static int next_free_block()
+{
+	// set up variables
+	int i;
+	unsigned int next_free_block;
+	char *fusedata_str = (char *) calloc(1, MAX_PATH_LENGTH);
+	FILE *free_block_file;
+	char *temp = (char *) calloc(1, BLOCK_SIZE);
+	char *buf = (char *) calloc(1, BLOCK_SIZE);
+	char *next_free_block_str;
+	unsigned int temp_int;
+	// loop through all free block list files if necessary
+	for (i = FREE_START; i <= 2; ++i) {
+		// append the number of the start of the free block list file and then open it
+		sprintf(fusedata_str, "fusedata.%d", i);
+		free_block_file = fopen(fusedata_str, "r+");
+		// get the entire contents of the free block file
+		fread(temp, BLOCK_SIZE, 1, free_block_file);
+		rewind(free_block_file);
+		// tokenize the file contents by commas
+		next_free_block_str = strtok(temp, ",");
+		// if there were no free blocks in the file, continue to the next file
+		if (strlen(next_free_block_str) == BLOCK_SIZE) {
+			fclose(free_block_file);
+			continue;
+		} else {
+			// put the next_free_block in a variable that will be returned
+			next_free_block = atoi(next_free_block_str);
+			// get the next_free_block after the first one in this list
+			next_free_block_str = strtok(NULL, ",");
+			// keep going so long as that is not the end of the string
+			while ( next_free_block_str != NULL ) {
+				temp_int = atoi(next_free_block_str);
+				// if the tokenized string was not a zero, add that to the buffer along with a comma
+				if (temp_int != 0) {
+					strcat(buf, next_free_block_str);
+					strcat(buf, ",");
+				}
+				next_free_block_str = strtok(NULL, ",");
+			}
+			remove_next_free_block(next_free_block, buf, free_block_file);
+			free(temp); free(buf); free(next_free_block_str); fclose(free_block_file);
+			return next_free_block;
+		}
+	}
+	free(temp); free(buf);
+	// we got through all the free block files and there were no free blocks to return
+	return -1;
+}
 /*
  * Return file attributes.
  * For the pathname, this should fill in the elements of "stat".
@@ -765,7 +777,7 @@ static int create_superblock(char *buf)
 	 * maxblocks is arbitrary but was set to 10000 at first creation of this block OS
 	*/	
 	// mounted:1 because this is the first mount; freeStart, freeEnd, root, and maxBlocks will be defined constants for each new creation of a filesystem
-	char *data = (char *) malloc(MAX_FILE_SIZE);
+	char *data = (char *) malloc(BLOCK_SIZE);
 	sprintf(data, "{creationTime: %s, mounted: 1, devId: 20, freeStart: %u, freeEnd: %u, root: %u, maxBlocks: %u}", creation_time_str, FREE_START, FREE_END, ROOT, MAX_NUM_BLOCKS);
 	
 	if ( write_to_file(data, superblock) != 0 ) {
@@ -792,7 +804,7 @@ static int create_free_block_list(char *fusedata_digit, char *fusedata_str, unsi
 	if (!free_start_file) {
 		return -errno;
 	}
-	char *data = (char *) malloc(MAX_FILE_SIZE);
+	char *data = (char *) malloc(BLOCK_SIZE);
 	// increment over 'i' up to BLOCKS_IN_FREE - 1 to write that free block to the free block list
 	int i;
 	for (i = ROOT + 1; i < BLOCKS_IN_FREE; ++i) {
@@ -844,16 +856,17 @@ static int create_root(char *fusedata_digit, char *fusedata_str)
 	if (!root_file) {
 		return -errno;
 	}
-	char *data = (char *) malloc(MAX_FILE_SIZE);
+	char *data = (char *) malloc(BLOCK_SIZE);
 	char *creation_time_str = (char *) malloc(20); // For 2014, time since Epoch would be 10 digits (so 20 possible digits is okay for now)
 	sprintf(creation_time_str, "%lu", time(NULL)); // put the an unsigned int representing time directly into the creation_time_str string
 	/* format of root-block:
 	 * {size:0, uid:1, gid:1, mode:16877, atime:1323630836, ctime:1323630836, mtime:1323630836, linkcount:2, filename_to_inode_dict: {d:.:26,d:..:26}}
+	 * mode:16877 converts to 40755 in octal; the 40000 refers to the fact that this is a directory
 	 * 
 	 * size is initially 0, uid, gid, & mode will not change for this filesystem;
 	 * atime (access time), ctime (inode or file change time), mtime (file modification time) are all the same when root is initialized;
 	 * linkcount is 2 because '.' and '..' point to root, and filename_to_inode_dict denotes the links to inodes root has stored
-	*/	
+	*/
 	sprintf(data, "{size:0, uid:%d, gid:%d, mode:16877, atime:%s, ctime:%s, mtime:%s, linkcount:2, filename_to_inode_dict: {d:.:%d,d:..:%d}}", UID, GID, creation_time_str, creation_time_str, creation_time_str, ROOT, ROOT);
 	if ( write_to_file(data, root_file) != 0 ) {
 		logmsg("FAILURE:\tcreate_root\twrite_to_file");
@@ -902,7 +915,7 @@ static int create_blocks(char *buf, char *fusedata_digit, char *fusedata_str, un
 // Essentially just updates the number of times mounted and writes that back to the fusedata.0 file
 static int update_superblock()
 {
-	char *temp = (char *) malloc(MAX_FILE_SIZE); // used to store string values that are already known and thus just need to pass over in the file stream
+	char *temp = (char *) malloc(BLOCK_SIZE); // used to store string values that are already known and thus just need to pass over in the file stream
 	FILE *superblock = fopen("fusedata.0", "r+"); // open the super-block with read + write permissions (but don't overwrite the file)
 	if (!superblock) {
 		return -errno;
