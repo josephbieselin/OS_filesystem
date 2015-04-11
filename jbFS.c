@@ -83,6 +83,15 @@ static int write_to_file(char *buf, FILE *file_stream)
 	return 0;
 }
 
+// takes in a buffer with data and attemps to write it to the filestream; return 0 on success, 1 if the data was too large, negative number on failure
+static int write_to_block(char *buf, FILE *fd)
+{
+	rewind(fd);
+	char file_contents[BLOCK_SIZE + 1];
+	fread(file_contents, BLOCK_SIZE, 1, fd);
+	
+}
+
 /* count the number of times ch appears in the string
  * Function was created by stackoverflow user 'Jon' and can be found at the URL below:
  * http://stackoverflow.com/questions/7349053/counting-the-number-of-times-a-character-occurs-in-a-string-in-c
@@ -254,7 +263,115 @@ static int create_inode(unsigned int inode_block, unsigned int file_block)
 	return 0;
 }
 
-// searches the path for a directory/file specified by type (0==dir, 1==file); returns the block number corresponding to the directory/file inode, or -1 if not path not valid
+// creates a directory inode block
+static int create_dir()
+{
+	
+}
+
+
+// type (0==dir, 1==file); when atime, ctime, or mtime is 1, the passed in FILE stream's respective time fields get updated; returns a 1 if the new file size will be too large
+static int update_time(unsigned int type, unsigned int atime, unsigned int ctime, unsigned int mtime, FILE *fd)
+{
+	// get the current time
+	char new_time[BLOCK_SIZE];
+	sprintf(new_time, "%i,", time(NULL));
+	// variables to be used in fscanf function of the file stream
+	char buf[BLOCK_SIZE + 1];
+	char size[BLOCK_SIZE]; char uid[BLOCK_SIZE]; char gid[BLOCK_SIZE]; char mode[BLOCK_SIZE]; char linkcount[BLOCK_SIZE];
+	char atime_str[BLOCK_SIZE]; int old_atime;
+	char ctime_str[BLOCK_SIZE]; int old_ctime;
+	char mtime_str[BLOCK_SIZE]; int old_mtime;
+	char fname_inode[BLOCK_SIZE]; char inodes[BLOCK_SIZE];
+	char indirect[BLOCK_SIZE]; char location[BLOCK_SIZE];
+	char temp[10];
+	// format will be for a directory
+	if (type == 0) {
+		// for whichever time value is equal to 1, update that time field with the new_time set at the beginning of the function
+		if (atime == 1) {
+			fscanf(fd, "%s %s %s %s %6c%i%*c %6c%i%*c %6c%i%*c %s %s %s", size, uid, gid, mode, atime_str, &old_atime, ctime_str, &old_ctime, mtime_str, &old_mtime, linkcount, fname_inode, inodes);
+			if (sprintf(buf, "%s %s %s %s atime:%s ctime:%i, mtime:%i, %s %s %s", size, uid, gid, mode, new_time, old_ctime, old_mtime, linkcount, fname_inode, inodes) > BLOCK_SIZE) {
+				return 1;
+			}
+			rewind(fd);
+			if ( write_to_file(buf, fd) != 0 ) {
+				return -1;
+			}
+			fread(temp, 1, 1, fd); rewind(fd);
+		}
+		if (ctime == 1) {
+			fscanf(fd, "%s %s %s %s %6c%i%*c %6c%i%*c %6c%i%*c %s %s %s", size, uid, gid, mode, atime_str, &old_atime, ctime_str, &old_ctime, mtime_str, &old_mtime, linkcount, fname_inode, inodes);
+			if (sprintf(buf, "%s %s %s %s atime:%i, ctime:%s mtime:%i, %s %s %s", size, uid, gid, mode, old_atime, new_time, old_mtime, linkcount, fname_inode, inodes) > BLOCK_SIZE) {
+				return 1;
+			}
+			rewind(fd);
+			if ( write_to_file(buf, fd) != 0 ) {
+				return -1;
+			}
+			fread(temp, 1, 1, fd); rewind(fd);
+		}
+		if (mtime == 1) {
+			fscanf(fd, "%s %s %s %s %6c%i%*c %6c%i%*c %6c%i%*c %s %s %s", size, uid, gid, mode, atime_str, &old_atime, ctime_str, &old_ctime, mtime_str, &old_mtime, linkcount, fname_inode, inodes);
+			if (sprintf(buf, "%s %s %s %s atime:%i, ctime:%i, mtime:%s %s %s %s", size, uid, gid, mode, old_atime, old_ctime, new_time, linkcount, fname_inode, inodes) > BLOCK_SIZE) {
+				return 1;
+			}
+			rewind(fd);
+			if ( write_to_file(buf, fd) != 0 ) {
+				return -1;
+			}
+			fread(temp, 1, 1, fd); rewind(fd);
+		}
+		return 0;
+	} else { // format will be for a file
+		// for whichever time value is equal to 1, update that time field with the new_time set at the beginning of the function
+		if (atime == 1) {
+			fscanf(fd, "%s %s %s %s %s %6c%i%*c %6c%i%*c %6c%i%*c %s %s", size, uid, gid, mode, linkcount, atime_str, &old_atime, ctime_str, &old_ctime, mtime_str, &old_mtime, indirect, location);
+			if (sprintf(buf, "%s %s %s %s %s atime:%s ctime:%i, mtime:%i, %s %s", size, uid, gid, mode, linkcount, new_time, old_ctime, old_mtime, indirect, location) > BLOCK_SIZE) {
+				return 1;
+			}
+			rewind(fd);
+			if ( write_to_file(buf, fd) != 0 ) {
+				return -1;
+			}
+			fread(temp, 1, 1, fd); rewind(fd);
+		}
+		if (ctime == 1) {
+			fscanf(fd, "%s %s %s %s %s %6c%i%*c %6c%i%*c %6c%i%*c %s %s", size, uid, gid, mode, linkcount, atime_str, &old_atime, ctime_str, &old_ctime, mtime_str, &old_mtime, indirect, location);
+			if (sprintf(buf, "%s %s %s %s %s atime:%i, ctime:%s mtime:%i, %s %s", size, uid, gid, mode, linkcount, old_atime, new_time, old_mtime, indirect, location) > BLOCK_SIZE) {
+				return 1;
+			}
+			rewind(fd);
+			if ( write_to_file(buf, fd) != 0 ) {
+				return -1;
+			}
+			fread(temp, 1, 1, fd); rewind(fd);
+		}
+		if (mtime == 1) {
+			fscanf(fd, "%s %s %s %s %s %6c%i%*c %6c%i%*c %6c%i%*c %s %s", size, uid, gid, mode, linkcount, atime_str, &old_atime, ctime_str, &old_ctime, mtime_str, &old_mtime, indirect, location);
+			if (sprintf(buf, "%s %s %s %s %s atime:%i, ctime:%i, mtime:%s %s %s", size, uid, gid, mode, linkcount, old_atime, old_ctime, new_time, indirect, location) > BLOCK_SIZE) {
+				return 1;
+			}
+			rewind(fd);
+			if ( write_to_file(buf, fd) != 0 ) {
+				return -1;
+			}
+			fread(temp, 1, 1, fd); rewind(fd);
+		}
+		return 0;
+	}
+}
+
+// searches for name inside of the fusedata.X block corresponding to dir_block; type (0==dir, 1==file); return the block number if name is found and the types match
+static int search_dir(char *name, unsigned int type, unsigned int dir_block)
+{
+	// open the file corresponding to fusedata.dir_block
+	char block_str[BLOCK_SIZE];
+	sprintf(block_str, "fusedata.%u", dir_block);
+	FILE *fd = fopen(block_str, "r+");
+	// CREATE FUNCTIONS TO CHANGE ATIME, MTIME, CTIME
+}
+
+// searches the path for a directory/file specified by type (0==dir, 1==file); returns the block number corresponding to the directory/file inode, 0 if the dir/file does not exist, or -1 if not path not valid
 static int search_path(char *path, unsigned int type)
 {
 	int parts_to_path = count_chars(file_path, '/');
@@ -269,7 +386,9 @@ static int search_path(char *path, unsigned int type)
 			path_parts[i++] = temp_str;
 		temp_str = strtok(NULL, "/");
 	}
-
+	int i = 0;
+	int block_num = search_dir(path_parts[i], type, ROOT);
+}
 
 /*
  * Return file attributes.
