@@ -40,8 +40,10 @@
 #define FREE_END		25		// end of the free block list (must be enough blocks between start and end to hold values representing MAX_NUM_BLOCKS)
 #define ROOT			26		// block for root dir
 #define BLOCKS_IN_FREE	400		// number of free blocks to store in the free block list files on filesystem creation
-#define UID				1		// user id (does not matter for this filesystem)
-#define GID				1		// group id (does not matter for this filesystem)
+#define UID				1		// user id (does not matter too much for this filesystem)
+#define GID				1		// group id (does not matter too much for this filesystem)
+#define DIR_UID			1000	// user id for a directory
+#define DIR_GID			1000	// group id for a directory
 
 
 // Other Constants
@@ -79,6 +81,17 @@ static int write_to_file(char *buf, FILE *file_stream)
 		return -errno;
 	}
 	return 0;
+}
+
+/* count the number of times ch appears in the string
+ * Function was created by stackoverflow user 'Jon' and can be found at the URL below:
+ * http://stackoverflow.com/questions/7349053/counting-the-number-of-times-a-character-occurs-in-a-string-in-c
+*/
+int count_chars(const char* string, char ch)
+{
+    int count = 0;
+    for(; *string; count += (*string++ == ch)) ;
+    return count;
 }
 
 // adds the free block number back to the appropriate free block list file and returns 0 upon success
@@ -214,6 +227,50 @@ static int next_free_block()
 	// we got through all the free block files and there were no free blocks to return
 	return -1;
 }
+
+// creates an inode block with a location that points to the file_block number; returns 0 on success
+static int create_inode(unsigned int inode_block, unsigned int file_block)
+{
+	// open the fusedata block corresponding to this new inode_block number
+	char inode_block_str[BLOCK_SIZE + 1];
+	sprintf(inode_block_str, "fusedata.%u", inode_block);
+	FILE *fd = fopen(inode_block_str, "r+");
+	/* file inode format:
+	 * {size:0, uid:1, gid:1, mode:33261, linkcount:1, atime:332442342, ctime:332442342, mtime:332442342,
+	 * indirect:0, location:2444}
+	 * size of the file is initially 0, there is only 1 link to the file at creation, there is no
+	 * indirect initially because we don't know how large the file will be yet
+	*/
+	// get creation time of this filesystem in reference to the Epoch
+	char creation_time_str[21]; // For 2014, time since Epoch would be 10 digits (so 20 possible digits is okay for now)
+	sprintf(creation_time_str, "%lu", time(NULL)); // put the an unsigned int representing time directly into the creation_time_str string
+	char buf[BLOCK_SIZE + 1];
+	sprintf(buf, "{size:0, uid:%d, gid:%d, mode:33261, linkcount:1, atime:%s, ctime:%s, mtime:%s, indirect:0, location:%u}", UID, GID, creation_time_str, creation_time_str, creation_time_str, file_block);
+	if ( write_to_file(buf, fd) != 0 ) {
+		logmsg("FAILURE:\tcreate_inode\twrite_to_file");
+		fclose(fd);
+		return -1;
+	}
+	return 0;
+}
+
+// searches the path for a directory/file specified by type (0==dir, 1==file); returns the block number corresponding to the directory/file inode, or -1 if not path not valid
+static int search_path(char *path, unsigned int type)
+{
+	int parts_to_path = count_chars(file_path, '/');
+	// create an array of strings to contain all parts of the path
+	char *path_parts[parts_to_path];
+	char *temp_str;
+	int i = 0;
+	// tokenize the path and put the contents into a string array
+	temp_str = strtok(file_path, "/");
+	while (temp_str != NULL) {
+		if (temp_str != "")
+			path_parts[i++] = temp_str;
+		temp_str = strtok(NULL, "/");
+	}
+
+
 /*
  * Return file attributes.
  * For the pathname, this should fill in the elements of "stat".
@@ -573,8 +630,10 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 		add_free_block(inode_block); // inode_block was removed from the free block list, but since there isn't room to for the file block, the inode_block should be put back as free
 		return -errno;
 	}
+	// create the inode data block and set it's location to point to the number of the file_block
+	create_inode(inode_block, file_block);
 	
-	fd = open(path, fi->flags, mode);
+	fd = open(path, fi->flags);
 	if (fd == -1)
 		return -errno;
 
