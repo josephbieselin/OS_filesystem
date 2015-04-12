@@ -237,11 +237,11 @@ static int create_inode(unsigned int inode_block, unsigned int file_block)
 	FILE *fd = fopen(inode_block_str, "r+");
 	/* file inode format:
 	 * {size:0, uid:1, gid:1, mode:33261, linkcount:1, atime:332442342, ctime:332442342, mtime:332442342,
-	 * indirect:0, location:2444}
+	 *  indirect:0, location:2444}
 	 * size of the file is initially 0, there is only 1 link to the file at creation, there is no
 	 * indirect initially because we don't know how large the file will be yet
 	*/
-	// get creation time of this filesystem in reference to the Epoch
+	// get creation time of this inode in reference to the Epoch
 	char creation_time_str[21]; // For 2014, time since Epoch would be 10 digits (so 20 possible digits is okay for now)
 	sprintf(creation_time_str, "%lu", time(NULL)); // put the an unsigned int representing time directly into the creation_time_str string
 	char buf[BLOCK_SIZE + 1];
@@ -254,9 +254,29 @@ static int create_inode(unsigned int inode_block, unsigned int file_block)
 	return 0;
 }
 
-// creates a directory inode block
-static int create_dir()
+// creates a directory inode block with to 2 links in inode_dict ('.' to self, '..' to parent); returns 0 on success
+static int create_dir(unsigned int dir_block, unsigned int parent_block))
 {
+	// open the fusedata block corresponding to this new dir_block number
+	char dir_block_str[BLOCK_SIZE + 1];
+	sprintf(dir_block_str, "fusedata.%u", dir_block);
+	FILE *fd = fopen(dir_block_str, "r+");
+	/* directory format:
+	 * {size:BLOCK_SIZE, uid:1000, gid:1000, mode:16877, atime:332442342, ctime:332442342, mtime:332442342, linkcount:2,
+	 *  filename_to_inode_dict: {d:.:dir_block,d:..:parent_block}}
+	 * size of the block is the block size, there is only 2 links initially (this dir and the parent dir)
+	*/
+	// get creation time of this directory in reference to the Epoch
+	char creation_time_str[21]; // For 2014, time since Epoch would be 10 digits (so 20 possible digits is okay for now)
+	sprintf(creation_time_str, "%lu", time(NULL)); // put the an unsigned int representing time directly into the creation_time_str string
+	char buf[BLOCK_SIZE + 1];
+	sprintf(buf, "{size:%d, uid:%d, gid:%d, mode:16877, atime:%s, ctime:%s, mtime:%s, linkcount:2, filename_to_inode_dict: {d:.:%u,d:..:%u}}", BLOCK_SIZE, DIR_UID, DIR_GID, creation_time_str, creation_time_str, creation_time_str, dir_block, parent_block);
+	if ( write_to_file(buf, fd) != 0 ) {
+		logmsg("FAILURE:\tcreate_inode\twrite_to_file");
+		fclose(fd);
+		return -1;
+	}
+	return 0;
 	
 }
 
@@ -393,6 +413,7 @@ static int update_linkcount(unsigned int type, FILE *fd)
 		return update_time(1, 1, 1, 0, fd); // update the atime and ctime of the directory entry; return value handles if errors occur			
 	}
 }
+
 
 
 // returns the block number if name and type match the entry; name = file/dir name to search for, type (0==dir, 1==file), entry = "type:name:block_number"
@@ -614,7 +635,6 @@ static int add_dict_entry(char *type, char *name, int inode_block, FILE *fd)
 	return 0;
 }
 
-
 // attemps to add a to a directory's file_to_inode_dict; returns -1 if there is a write error, 1 if the write would cause the directory block to surpass the BLOCK_SIZE limit, 0 if successful
 static int add_to_dir_dict(char *type, char *name, int inode_block, char *dir_path)
 {
@@ -630,6 +650,10 @@ static int add_to_dir_dict(char *type, char *name, int inode_block, char *dir_pa
 	fclose(fd);
 	return result;
 }
+
+
+
+
 
 /*
  * Return file attributes.
@@ -852,9 +876,11 @@ static int jb_releasedir(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
+
+
 /* Create a directory with the given name
  * Note that the mode argument may not have the type specification bits set, (i.e., S_ISDIR(mode) can be false).
- * To obtain the dorrect directory type bits, use "mode|S_IFDIR".
+ * To obtain the correct directory type bits, use "mode|S_IFDIR".
  * 
  * Directory permissions are encoded in mode.
  * 
@@ -872,14 +898,54 @@ static int jb_releasedir(const char *path, struct fuse_file_info *fi)
 */
 static int jb_mkdir(const char *path, mode_t mode)
 {
-	int res;
-
-	res = mkdir(path, mode);
-	if (res == -1)
+	// search_path will return -1 if the path has invalid directory references, 0 if the directory does not exist, or a block_number if the directory already exists
+	int file_ref = search_path(path, 1);
+	if (file_ref == -1) {
+		logmsg("ERROR:\tjb_mkdir\tfile_ref\tENOENT");
+		errno = ENOENT;
 		return -errno;
-
+	} else if (file_ref > 0) {
+		logmsg("ERROR:\tjb_mkdir\tfile_ref\tEEXIST");
+		errno = EEXIST;
+		return -errno;
+	}
+	// if the directory does not already exist and we have a valid path to some directory preceedign it, create the directory
+	// get the 1 free blocks for the directory inode; if there isn't an available inode, return an error
+	unsigned int dir_block = next_free_block();
+	if (dir_block == -1) {
+		logmsg("ERROR:\tjb_mkdir\tdir_block\tEDQUOTE");
+		errno = EDQUOT; // all available free blocks are used up
+		return -errno;
+	}
+	// get the directory's name and the directory path leading up to that directory name
+	char dir_name = get_element(1, path);
+	char dir_path = get_element(0, path);
+	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
+	int inode_dir_val = add_to_dir_dict("d", dir_name, dir_block, dir_path);
+	if (inode_dir_val == -1) {
+		logmsg("FAILURE:\tjb_mkdir\tinode_dir_val\tEIO");
+		errno = EIO;
+		return -errno;
+	} else if (inode_dir_val == 1) {
+		logmsg("ERROR:\tjb_mkdir\tinode_dir_val\tEFBIG");
+		errno = EFBIG;
+		return -errno;
+	}
+	// the dir_block was successfully written to the directory
+	
+	// get the fusedata block number of the parent directory path (we know it exists based on the inital search_path called in this function)
+	unsigned int parent_block = search_path(dir_path, 0);
+	// create the new directory's structure and include the inode_dict for this dir and the parent dir
+	if (create_dir(dir_block, parent_block) != 0) { // if there was an error creating the block, it was due to the fact that was an IO error with writing to fusedata.X
+		logmsg("FAILURE:\tjb_mkdir\tcreate_dir\tEIO");
+		errno = EIO;
+		return -errno;
+	}
+	
 	return 0;
 }
+
+
 
 /* Remove a file
  * Remove the given file, sym-link, hard link, or special node.
@@ -966,6 +1032,9 @@ static int jb_link(const char *from, const char *to)
 	return 0;
 }
 
+
+
+
 /* Create and open a file
  * If the file does not exist, first create it with the specified mode, and then open it
  * 
@@ -1034,6 +1103,9 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	fi->fh = fd;
 	return 0;
 }
+
+
+
 
 /* File open operation
  * Optionally "open" may also return an arbitrary filehandle in the "fuse_file_info" struct, which will be passed to all file opeartions
@@ -1202,6 +1274,16 @@ void jb_destroy(void *buf)
 {
 
 }
+
+
+
+
+
+
+
+
+// ------------------------- INIT STUFF WITH SUPERBLOCK, FREE BLOCK LIST, AND ROOT -------------------------------------------------
+
 
 // Create the super-block (fusedata.0)
 static int create_superblock(char *buf)
