@@ -83,15 +83,6 @@ static int write_to_file(char *buf, FILE *file_stream)
 	return 0;
 }
 
-// takes in a buffer with data and attemps to write it to the filestream; return 0 on success, 1 if the data was too large, negative number on failure
-static int write_to_block(char *buf, FILE *fd)
-{
-	rewind(fd);
-	char file_contents[BLOCK_SIZE + 1];
-	fread(file_contents, BLOCK_SIZE, 1, fd);
-	
-}
-
 /* count the number of times ch appears in the string
  * Function was created by stackoverflow user 'Jon' and can be found at the URL below:
  * http://stackoverflow.com/questions/7349053/counting-the-number-of-times-a-character-occurs-in-a-string-in-c
@@ -438,9 +429,13 @@ static int search_dir(char *name, unsigned int type, unsigned int dir_block)
 // searches the path for a directory/file specified by type (0==dir, 1==file); returns the block number corresponding to the directory/file inode, 0 if the dir/file does not exist, or -1 if the path was not valid
 static int search_path(char *the_path, unsigned int type)
 {
+	// if one backslash is passed, return the root's block number
+	if ( (strcmp(the_path, "/") == 0) && (type == 0) ) {
+		return ROOT;
+	}
 	char path[BLOCK_SIZE + 1];
 	strcpy(path, the_path);
-	// parts_to_path will be 1 if the search path is "/dir"; it will be 2 if the search path is "/other/dir"
+	// parts_to_path will be 1 if the search path is similar to "/dir"; it will be 2 if the search path is similar to "/other/dir"
 	int parts_to_path = count_chars(path, '/');
 	// create an array of strings to contain all parts of the path
 	char *path_parts[parts_to_path - 1];
@@ -496,7 +491,85 @@ static int search_path(char *the_path, unsigned int type)
 	}
 }
 
+	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
+	int inode_dir_val = inode_to_dir(inode_block, file_name, dir_path);
 
+// returns a char string based on type; type (0==directory path leading up to last element of path, 1==last element of path)
+char *get_element(int type, char *the_path)
+{
+	char path[BLOCK_SIZE + 1];
+	strcpy(path, the_path);
+	// parts_to_path will be 1 if the search path is similar to "/dir"; it will be 2 if the search path is similar to "/other/dir"
+	int parts_to_path = count_chars(path, '/');
+	// create an array of strings to contain all parts of the path
+	char *path_parts[parts_to_path - 1];
+	int i = 0;
+	// tokenize the path and put the contents into a string array
+	part_parts[i] = strtok(path, "/");
+	while (path_parts[i++] != NULL) {
+		path_parts[i] = strtok(NULL, "/");
+	}
+	// if the last element of path_parts is NULL, ignore it since an extra "/" may have been passed to path
+	if ( path_parts[parts_to_path - 1] == NULL ) {
+		--parts_to_path;
+	}
+	// if we just want the last element, return the last element
+	if (type == 1) {
+		return path_parts[parts_to_path - 1];
+	} else { // return all the elements with "/" separation leading up to the last element
+		char dir_path[BLOCK_SIZE + 1];
+		strcpy(dir_path, "/");
+		for (i = 0; i < (parts_to_path - 2); ++i) {
+			strcat(dir_path, path_parts[i]);
+			strcat(dir_path, "/");
+		}
+		strcat(dir_path, path_parts[i];
+		return dir_path;
+	}	
+}
+
+// updates to a directory's file_to_inode_dict; returns -1 if there is a write error, 1 if the write would cause the directory block to surpass the BLOCK_SIZE limit, 0 if successful
+static int add_dict_entry(char *type, char *name, int inode_block, FILE *fd)
+{
+	char buf[BLOCK_SIZE + 1];
+	// get the contents of the file
+	char file_contents[BLOCK_SIZE + 1];
+	fread(file_contents, BLOCK_SIZE, 1, fd);
+	rewind(fd);
+	char *parts[3]; // 3 because the file is split into 3 groupings based on the "{}" delimiter characters
+	int i = 0;
+	// tokenize the file contents by the "{}" delimiter characters; parts[1]: directory info, parts[2]: previous inodes in file; parts[3]: 0's at end of file
+	parts[i] = strtok(file_contents, "{}");
+	while (parts[i++] != NULL) {
+		parts[i] = strtok(NULL, "{}");
+	}
+	// add the directory's info back along with appropriate "{}" chars, and add the new inode entry to the end of the previous entries
+	if (sprintf(buf, "{%s{%s,%s:%s:%i}}", parts[0], parts[1], type, name, inode_block) > BLOCK_SIZE) {
+		logmsg("ERROR:\tadd_dict_entry\tsprintf\tbuf too large"):
+		return 1;
+	}
+	if ( write_to_file(buf, fd) != 0 ) {
+		logmsg("FAILURE:\tadd_dict_entry\twrite_to_file");
+		return -1;
+	}
+	// successfully wrote the new directory inode dictionary entry to the directory block
+	return 0;
+}
+
+// attemps to add a to a directory's file_to_inode_dict; returns -1 if there is a write error, 1 if the write would cause the directory block to surpass the BLOCK_SIZE limit, 0 if successful
+static int add_to_dir_dict(char *type, char *name, int inode_block, char *dir_path)
+{
+	// open the directory's file
+	int dir_block_num = search_path(dir_path, 0);
+	char dir_block[MAX_PATH_LENGTH + 1];
+	sprintf(dir_block, "fusedata.%i", dir_block_num);
+	FILE *fd = fopen(dir_block, "r+");
+	update_time(0, 1, 1, 0, fd); // update the atime and ctime of this directory
+	// get the result of trying to add the entry
+	int result = add_dict_entry(type, name, inode_block, fd);
+	fclose(fd);
+	return result;
+}
 
 /*
  * Return file attributes.
@@ -845,14 +918,28 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	int fd;
 	
+	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
+	int file_ref = search_path(path, 1);
+	if (file_ref == -1) {
+		logmsg("ERROR:\tjb_create\tfile_ref\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	} else if (file_ref > 0) {
+		logmsg("ERROR:\tjb_create\tfile_ref\tEEXIST");
+		errno = EEXIST;
+		return -errno;
+	}
+	// if the file does not already exist and we have a valid path to some directory, create the file
 	// get the 2 free blocks for the inode and actual file; if there isn't enough inodes, return an error
 	int inode_block = next_free_block();
 	if (inode_block == -1) {
+		logmsg("ERROR:\tjb_create\tinode_block\tEDQUOTE");
 		errno = EDQUOT; // all available free blocks are used up
 		return -errno;
 	}
 	int file_block = next_free_block();
 	if (file_block == -1) {
+		logmsg("ERROR:\tjb_create\tfile_block\tEDQUOTE");
 		errno = EDQUOT; // all available free blocks are used up
 		add_free_block(inode_block); // inode_block was removed from the free block list, but since there isn't room to for the file block, the inode_block should be put back as free
 		return -errno;
@@ -860,10 +947,30 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	// create the inode data block and set it's location to point to the number of the file_block
 	create_inode(inode_block, file_block);
 	
-	fd = open(path, fi->flags);
+	// get the file name and the directory path leading up to that file name
+	char file_name = get_element(1, path);
+	char dir_path = get_element(0, path);
+	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
+	int inode_dir_val = add_to_dir_dict("f", file_name, inode_block, dir_path);
+	if (inode_dir_val == -1) {
+		logmsg("FAILURE:\tjb_create\tinode_dir_val\tEIO");
+		errno = EIO;
+		return -errno;
+	} else if (inode_dir_val == 1) {
+		logmsg("ERROR:\tjb_create\tinode_dir_val\tEFBIG");
+		errno = EFBIG;
+		return -errno;
+	}
+	// the inode block was successfully written to the directory
+	
+	// open the fusedata.X file corresponding to the newly created file
+	char fusedata_inode[MAX_PATH_LENGTH + 1];
+	sprintf(fusedata_inode, "fusedata.%i", inode_block);
+	fd = open(fusedata_inode, fi->flags);
+	// if there was an error opening the file
 	if (fd == -1)
 		return -errno;
-
+	// set the fuse_file_info file handle to the newly created and opened file
 	fi->fh = fd;
 	return 0;
 }
