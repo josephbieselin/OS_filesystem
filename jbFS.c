@@ -655,6 +655,9 @@ static int add_to_dir_dict(char *type, char *name, int inode_block, char *dir_pa
 
 
 
+
+
+
 /*
  * Return file attributes.
  * For the pathname, this should fill in the elements of "stat".
@@ -686,6 +689,17 @@ static int jb_getattr(const char *path, struct stat *stbuf)
 		return -errno;
 	return res;
 */
+
+	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
+	int file_ref = search_path(path, 1);
+	// if file_ref is less than 1 (i.e. 0 or -1) the file path does not exist
+	if (file_ref < 1) {
+		logmsg("ERROR:\tjb_create\tfile_ref\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	}
+
+	
 	
 	int res;
 	res = 0;
@@ -748,6 +762,7 @@ struct jb_dirp {
 */
 static int jb_opendir(const char *path, struct fuse_file_info *fi)
 {
+/*	previous code:
 	int res;
 	struct jb_dirp *d = malloc(sizeof(struct jb_dirp));
 	if (d == NULL)
@@ -764,6 +779,30 @@ static int jb_opendir(const char *path, struct fuse_file_info *fi)
 
 	fi->fh = (unsigned long) d;
 	return 0;
+*/	
+
+
+	int fd;
+	
+	// search_path will return -1 if the path has invalid directory references, 0 if the directory does not exist, or a block_number if the directory already exists
+	int dir_ref = search_path(path, 1);
+	// if dir_ref is less than 1 (i.e. 0 or -1) the dir path does not exist
+	if (file_ref < 1) {
+		logmsg("ERROR:\tjb_create\tdir_ref\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	}
+	// otherwise the dir_ref is the block number of the fusedata.X file that refers to the directory path's inode
+	// open the fusedata.X block corresponding the directory
+	char fusedata_inode[MAX_PATH_LENGTH + 1];
+	sprintf(fusedata_inode, "fusedata.%i", dir_ref);
+	fd = open(fusedata_inode, fi->flags);
+	// if there was an error opening the directory's block file
+	if (fd == -1)
+		return -errno;
+	// set the fuse_file_info file handle to the newly created and opened directory inode
+	fi->fh = fd;
+	return 0;	
 }
 
 // Returns (struct jb_dirp *) fi->fh which is a file handle
@@ -878,6 +917,7 @@ static int jb_releasedir(const char *path, struct fuse_file_info *fi)
 
 
 
+
 /* Create a directory with the given name
  * Note that the mode argument may not have the type specification bits set, (i.e., S_ISDIR(mode) can be false).
  * To obtain the correct directory type bits, use "mode|S_IFDIR".
@@ -899,7 +939,7 @@ static int jb_releasedir(const char *path, struct fuse_file_info *fi)
 static int jb_mkdir(const char *path, mode_t mode)
 {
 	// search_path will return -1 if the path has invalid directory references, 0 if the directory does not exist, or a block_number if the directory already exists
-	int file_ref = search_path(path, 1);
+	int file_ref = search_path(path, 0);
 	if (file_ref == -1) {
 		logmsg("ERROR:\tjb_mkdir\tfile_ref\tENOENT");
 		errno = ENOENT;
@@ -944,6 +984,7 @@ static int jb_mkdir(const char *path, mode_t mode)
 	
 	return 0;
 }
+
 
 
 
@@ -1120,25 +1161,27 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 */
 static int jb_open(const char *path, struct fuse_file_info *fi)
 {
-	/* previous code
 	int fd;
-
-	fd = open(path, fi->flags);
+	
+	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
+	int file_ref = search_path(path, 1);
+	// if file_ref is less than 1 (i.e. 0 or -1) the file path does not exist
+	if (file_ref < 1) {
+		logmsg("ERROR:\tjb_create\tfile_ref\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	}
+	// otherwise the file_ref is the block number of the fusedata.X file that refers to the file path's inode
+	// open the fusedata.X block corresponding the inode
+	char fusedata_inode[MAX_PATH_LENGTH + 1];
+	sprintf(fusedata_inode, "fusedata.%i", file_ref);
+	fd = open(fusedata_inode, fi->flags);
+	// if there was an error opening the file
 	if (fd == -1)
 		return -errno;
-
+	// set the fuse_file_info file handle to the newly created and opened file inode
 	fi->fh = fd;
 	return 0;
-	*/
-	
-// for every file here needs to check strcmp is okay
-/*	if (strcmp(path, KATZ_path) != 0 && strcmp(path, "/testing") !=0 && strcmp(path, "/fusedata.0")  !=0)
-		return -ENOENT;
-
-	if ((fi->flags & 3) != O_RDONLY)
-		return -EACCES;
-*/
-	return 0;	
 }
 
 /* Read data from an open file
@@ -1213,6 +1256,7 @@ static int jb_write(const char *path, const char *buf, size_t size,
 
 	return res;
 }
+
 
 /* Get file system statistics
  * 'f_frsize', 'f_favail', 'f_fsid', and 'f_flag' fields are ignored
