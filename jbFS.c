@@ -361,6 +361,28 @@ static int update_time(unsigned int type, unsigned int atime, unsigned int ctime
 	}
 }
 
+// returns the block number if name and type match the entry; name = file/dir name to search for, type (0==dir, 1==file), entry = "type:name:block_number"
+static int compare_dir_entry(char *name, unsigned int type, char *entry)
+{
+	// entry_vals shall contain three indexes: 0 = type ('f' or 'd'), 1 = name, 2 = block_number
+	char *entry_vals[3];
+	int i = 0;
+	entry_vals[i] = strtok(entry, ":");
+	while (entry_vals[i++] != NULL) {
+		entry_vals[i] = strtok(NULL, ":");
+	}
+	// if type we are looking for matches the type of this entry, check the name
+	if ( ( (type == 0) && (strcmp("d", entry_vals[0]) == 0) )  ||  ( (type == 1) && (strcmp("f", entry_vals[0]) == 0) ) ) {
+		// if the passed in name matches the entry's name, return the entry's block_number
+		if ( strcmp(name, entry_vals[1]) == 0 ) {
+			return entry_vals[2];
+		}
+	}
+	// either the types did not match or the names did not match, so return -1
+	return -1;
+	
+}
+
 // searches for name inside of the fusedata.X block corresponding to dir_block; type (0==dir, 1==file); return the block number if name is found and the types match
 static int search_dir(char *name, unsigned int type, unsigned int dir_block)
 {
@@ -368,26 +390,101 @@ static int search_dir(char *name, unsigned int type, unsigned int dir_block)
 	char block_str[BLOCK_SIZE];
 	sprintf(block_str, "fusedata.%u", dir_block);
 	FILE *fd = fopen(block_str, "r+");
-	// CREATE FUNCTIONS TO CHANGE ATIME, MTIME, CTIME
+	// update the access time of the directory since we are searching through it
+	int temp = update_time(0, 1, 0, 0, fd);
+	if (temp == 1) {
+		logmsg("FAILURE:\tsearch_dir\tupdate_time\tno more space");
+		return temp;
+	} else if (temp == -1) {
+		logmsg("FAILURE:\tsearch_dir\update_time\tfailed to write");
+		return temp;
+	}
+	// if update_time did not return a -1 or 1, it was successful
+	// read the file block into a char array that will be parsed
+	char file_contents[BLOCK_SIZE + 1];
+	fread(file_contents, BLOCK_SIZE, 1, fd);
+	// tokenize the directory contents by the brackets
+	int i = 0;
+	char *dir_entries[3]; // 3 because there is 1) dir info, 2) dir entries (which is what is needed), 3) 0's after the closing '}' chars
+	dir_entires[i] = strtok(file_contents, "{}");
+	while (dir_entries[i++] != NULL) {
+		dir_entires[i] = strtok(NULL, "{}");
+	}
+	// dir_entries[1] contains the directory entires; the number of entires is the number of commas + 1
+	int num_entries = count_chars(dir_entries[1], ',');
+	++num_entries;
+	char *entry_names[num_entries];
+	// tokenize the entries by commas to get each type, name, and block number
+	int i = 0;
+	entry_names[i] = strtok(dir_entries[i], ","); // each index will contain: "type:name:number" --> type = 'f' or 'd' for file or dir, name = the name of the entry to compare too, number = block number of the entry
+	while (entry_names[i++] != NULL) {
+		entry_names[i] = strtok(NULL, ",");
+	}
+	int temp_block = -1;
+	for (i = 0; i < num_entries; ++i) {
+		// compare a directory entry and return the block number of the entry if it is found
+		temp_block = compare_dir_entry(name, type, entry_names[i]);
+		if (temp_block > 0) {
+			break; // we found a match for our file/directory, so break
+		}
+	}
+	// if the directory/file name was not found, temp will equal -1; otherwise, it will equal the block number of the found entry
+	fclose(fd);
+	return temp_block;
 }
 
-// searches the path for a directory/file specified by type (0==dir, 1==file); returns the block number corresponding to the directory/file inode, 0 if the dir/file does not exist, or -1 if not path not valid
+// searches the path for a directory/file specified by type (0==dir, 1==file); returns the block number corresponding to the directory/file inode, 0 if the dir/file does not exist, or -1 if the path was not valid
 static int search_path(char *path, unsigned int type)
 {
+	// parts_to_path will be 1 if the search path is "/dir"; it will be 2 if the search path is "/other/dir"
 	int parts_to_path = count_chars(file_path, '/');
 	// create an array of strings to contain all parts of the path
 	char *path_parts[parts_to_path];
 	char *temp_str;
 	int i = 0;
 	// tokenize the path and put the contents into a string array
-	temp_str = strtok(file_path, "/");
-	while (temp_str != NULL) {
-		if (temp_str != "")
-			path_parts[i++] = temp_str;
-		temp_str = strtok(NULL, "/");
+	path_parts[i] = strtok(file_path, "/");
+	while (path_parts[i++] != NULL) {
+		path_parts[i] = strtok(NULL, "/");
 	}
 	int i = 0;
-	int block_num = search_dir(path_parts[i], type, ROOT);
+	int block_num;
+	// if there is more than one '/' in the path, the first part of the name inside the root dir will be a directory
+	if ( parts_to_path > 1 ) {
+		block_num = search_dir(path_parts[i], 0, ROOT);
+	} else { // we are looking for something in root, so find it based whatever the passed in type was
+		block_num = search_dir(path_parts[i], type, ROOT);
+	}
+	// if we are looking at root dir and the file/dir was not found, return 0
+	if ( (parts_to_path == 1) && (block_num == -1) ) {
+		return 0;
+	} else if ( (parts_to_path == 1) && (block_num > 0) ) { // there was only 1 element to search for in root and it was found
+		return block_num;
+	}
+	// we are looking in sub-directories of root, so until we get to the last element of the path, we are looking for directory names
+	if ( block_num == -1 ) {
+		return -1; // return -1 because the first directory in path inside of root was not found
+	}
+	for (i = 1; i < parts_to_path; ++i) {
+		// if the last element of the path is the next part to be searched
+		if ( i == (parts_to_path - 1) ) {
+			block_num = search_dir(path_parts[i], type, block_num);
+			// if file/dir was not found, it does not exist so return 0
+			if (block_num == -1) {
+				return 0;
+			} else { // the final element was found so return the block number
+				return block_num;
+			}
+		} else { // we are not at the last element of the path, so we are searching for directory names
+			block_num = search_dir(path_parts[i], 0, block_num);
+			// the directory name was not found, so the path is invalid; return a -1
+			if (block_num == -1) {
+				return -1;
+			} else { // the directory name was found, but we have not reached the end of path, so continue
+				continue;
+			}
+		}
+	}
 }
 
 /*
