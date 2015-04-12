@@ -352,6 +352,49 @@ static int update_time(unsigned int type, unsigned int atime, unsigned int ctime
 	}
 }
 
+
+// type (0==dir, 1==file); the passed in FILE stream's respective linkcount field will get incremented; returns a 1 if the new file size will be too large, -1 if a write failed, 0 if successful
+static int update_linkcount(unsigned int type, FILE *fd)
+{
+	// variables to be used in fscanf function of the file stream
+	char buf[BLOCK_SIZE + 1];
+	char size[BLOCK_SIZE]; char uid[BLOCK_SIZE]; char gid[BLOCK_SIZE]; char mode[BLOCK_SIZE];
+	char linkcount_str[BLOCK_SIZE]; int linkcount;
+	char atime_str[BLOCK_SIZE]; char ctime_str[BLOCK_SIZE]; char mtime_str[BLOCK_SIZE];
+	char fname_inode[BLOCK_SIZE]; char inodes[BLOCK_SIZE];
+	char indirect[BLOCK_SIZE]; char location[BLOCK_SIZE];
+	char temp[10];
+	// format will be for a directory
+	if (type == 0) {
+		// increment the linkcount for a directory because a new inode was added to its dict
+		fscanf(fd, "%s %s %s %s %s %s %s %10c%i%*c %s %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount_str, linkcount, fname_inode, inodes);
+		++linkcount; // increment the linkcount to account for the new directory entry
+		if (sprintf(buf, "%s %s %s %s %s %s %s linkcount:%i, %s %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount, fname_inode, inodes) > BLOCK_SIZE) {
+			return 1;
+		}
+		rewind(fd);
+		if ( write_to_file(buf, fd) != 0 ) {
+			return -1;
+		}
+		fread(temp, 1, 1, fd); rewind(fd);
+		return update_time(0, 1, 1, 0, fd); // update the atime and ctime of the directory entry; return value handles if errors occur
+	} else { // format will be for a file
+		// increment the linkcount for a file because a new directory entry was linked to it
+		fscanf(fd, "%s %s %s %s %10c%i%*c %s %s %s %s %s", size, uid, gid, mode, linkcount_str, linkcount, atime_str, ctime_str, mtime_str, indirect, location);
+		++linkcount; // increment the linkcount to account for the new link to the file
+		if (sprintf(buf, "%s %s %s %s linkcount:%i, %s %s %s %s %s", size, uid, gid, mode, linkcount, atime_str, ctime_str, mtime_str, indirect, location) > BLOCK_SIZE) {
+			return 1;
+		}
+		rewind(fd);
+		if ( write_to_file(buf, fd) != 0 ) {
+			return -1;
+		}
+		fread(temp, 1, 1, fd); rewind(fd);
+		return update_time(1, 1, 1, 0, fd); // update the atime and ctime of the directory entry; return value handles if errors occur			
+	}
+}
+
+
 // returns the block number if name and type match the entry; name = file/dir name to search for, type (0==dir, 1==file), entry = "type:name:block_number"
 static int compare_dir_entry(char *name, unsigned int type, char *entry)
 {
@@ -491,8 +534,6 @@ static int search_path(char *the_path, unsigned int type)
 	}
 }
 
-	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
-	int inode_dir_val = inode_to_dir(inode_block, file_name, dir_path);
 
 // returns a char string based on type; type (0==directory path leading up to last element of path, 1==last element of path)
 char *get_element(int type, char *the_path)
@@ -543,9 +584,26 @@ static int add_dict_entry(char *type, char *name, int inode_block, FILE *fd)
 	while (parts[i++] != NULL) {
 		parts[i] = strtok(NULL, "{}");
 	}
+	
+	// copy the info about the directory into a char array so we can update the link count
+	char parts_0[BLOCK_SIZE + 1];
+	// get the original directory info, updating the linkcount, and put it into the parts_0 char array
+	char size[BLOCK_SIZE]; char uid[BLOCK_SIZE]; char gid[BLOCK_SIZE]; char mode[BLOCK_SIZE];
+	char linkcount_str[BLOCK_SIZE]; int linkcount;
+	char atime_str[BLOCK_SIZE]; char ctime_str[BLOCK_SIZE]; char mtime_str[BLOCK_SIZE];
+	char fname_inode[BLOCK_SIZE]; //char inodes[BLOCK_SIZE];
+	//char indirect[BLOCK_SIZE]; char location[BLOCK_SIZE];
+	char temp[10];
+	// format will be for a directory
+	// increment the linkcount for a directory because a new inode was added to its dict
+	fscanf(fd, "%s %s %s %s %s %s %s %10c%i%*c %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount_str, &linkcount, fname_inode);
+	++linkcount; // increment the linkcount to account for the new directory entry
+	sprintf(parts_0, "%s %s %s %s %s %s %s linkcount:%i, %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount, fname_inode);
+	rewind(fd);	
+	
 	// add the directory's info back along with appropriate "{}" chars, and add the new inode entry to the end of the previous entries
-	if (sprintf(buf, "{%s{%s,%s:%s:%i}}", parts[0], parts[1], type, name, inode_block) > BLOCK_SIZE) {
-		logmsg("ERROR:\tadd_dict_entry\tsprintf\tbuf too large"):
+	if (sprintf(buf, "%s {%s,%s:%s:%i}}", parts_0, parts[1], type, name, inode_block) > BLOCK_SIZE) {
+		logmsg("ERROR:\tadd_dict_entry\tsprintf\tbuf too large");
 		return 1;
 	}
 	if ( write_to_file(buf, fd) != 0 ) {
@@ -556,6 +614,7 @@ static int add_dict_entry(char *type, char *name, int inode_block, FILE *fd)
 	return 0;
 }
 
+
 // attemps to add a to a directory's file_to_inode_dict; returns -1 if there is a write error, 1 if the write would cause the directory block to surpass the BLOCK_SIZE limit, 0 if successful
 static int add_to_dir_dict(char *type, char *name, int inode_block, char *dir_path)
 {
@@ -565,6 +624,7 @@ static int add_to_dir_dict(char *type, char *name, int inode_block, char *dir_pa
 	sprintf(dir_block, "fusedata.%i", dir_block_num);
 	FILE *fd = fopen(dir_block, "r+");
 	update_time(0, 1, 1, 0, fd); // update the atime and ctime of this directory
+	rewind(fd);
 	// get the result of trying to add the entry
 	int result = add_dict_entry(type, name, inode_block, fd);
 	fclose(fd);
