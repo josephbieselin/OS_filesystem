@@ -470,6 +470,10 @@ static int search_path(char *the_path, unsigned int type)
 	if ( block_num == -1 ) {
 		return -1; // return -1 because the first directory in path inside of root was not found
 	}
+	// if the last element of path_parts is NULL (possibly because the passed in path had an ending "/" for no reason, i.e. "/file/path/"), decrement parts_to_path so the last element isn't searched
+	if ( path_parts[parts_to_path - 1] == NULL)
+		--parts_to_path;
+	// search for "/" delimited element from the passed in path, returning the block number of the element if found; return -1 if an illegitimate directory is passed in the path, or 0 if all elements were legitimate except for the last element
 	for (i = 1; i < parts_to_path; ++i) {
 		// if the last element of the path is the next part to be searched
 		if ( i == (parts_to_path - 1) ) {
@@ -491,6 +495,7 @@ static int search_path(char *the_path, unsigned int type)
 		}
 	}
 }
+
 
 
 /*
