@@ -375,7 +375,9 @@ static int compare_dir_entry(char *name, unsigned int type, char *entry)
 	if ( ( (type == 0) && (strcmp("d", entry_vals[0]) == 0) )  ||  ( (type == 1) && (strcmp("f", entry_vals[0]) == 0) ) ) {
 		// if the passed in name matches the entry's name, return the entry's block_number
 		if ( strcmp(name, entry_vals[1]) == 0 ) {
-			return entry_vals[2];
+			int block_num = atoi(entry_vals[2]);
+			//return entry_vals[2];
+			return block_num;
 		}
 	}
 	// either the types did not match or the names did not match, so return -1
@@ -396,7 +398,7 @@ static int search_dir(char *name, unsigned int type, unsigned int dir_block)
 		logmsg("FAILURE:\tsearch_dir\tupdate_time\tno more space");
 		return temp;
 	} else if (temp == -1) {
-		logmsg("FAILURE:\tsearch_dir\update_time\tfailed to write");
+		logmsg("FAILURE:\tsearch_dir\tupdate_time\tfailed to write");
 		return temp;
 	}
 	// if update_time did not return a -1 or 1, it was successful
@@ -406,17 +408,17 @@ static int search_dir(char *name, unsigned int type, unsigned int dir_block)
 	// tokenize the directory contents by the brackets
 	int i = 0;
 	char *dir_entries[3]; // 3 because there is 1) dir info, 2) dir entries (which is what is needed), 3) 0's after the closing '}' chars
-	dir_entires[i] = strtok(file_contents, "{}");
+	dir_entries[i] = strtok(file_contents, "{}");
 	while (dir_entries[i++] != NULL) {
-		dir_entires[i] = strtok(NULL, "{}");
+		dir_entries[i] = strtok(NULL, "{}");
 	}
-	// dir_entries[1] contains the directory entires; the number of entires is the number of commas + 1
+	// dir_entries[1] contains the directory entries; the number of entires is the number of commas + 1
 	int num_entries = count_chars(dir_entries[1], ',');
 	++num_entries;
 	char *entry_names[num_entries];
 	// tokenize the entries by commas to get each type, name, and block number
-	int i = 0;
-	entry_names[i] = strtok(dir_entries[i], ","); // each index will contain: "type:name:number" --> type = 'f' or 'd' for file or dir, name = the name of the entry to compare too, number = block number of the entry
+	i = 0;
+	entry_names[i] = strtok(dir_entries[1], ","); // each index will contain: "type:name:number" --> type = 'f' or 'd' for file or dir, name = the name of the entry to compare too, number = block number of the entry
 	while (entry_names[i++] != NULL) {
 		entry_names[i] = strtok(NULL, ",");
 	}
@@ -434,20 +436,23 @@ static int search_dir(char *name, unsigned int type, unsigned int dir_block)
 }
 
 // searches the path for a directory/file specified by type (0==dir, 1==file); returns the block number corresponding to the directory/file inode, 0 if the dir/file does not exist, or -1 if the path was not valid
-static int search_path(char *path, unsigned int type)
+static int search_path(char *the_path, unsigned int type)
 {
+	char path[BLOCK_SIZE + 1];
+	strcpy(path, the_path);
 	// parts_to_path will be 1 if the search path is "/dir"; it will be 2 if the search path is "/other/dir"
-	int parts_to_path = count_chars(file_path, '/');
+	int parts_to_path = count_chars(path, '/');
 	// create an array of strings to contain all parts of the path
-	char *path_parts[parts_to_path];
+	char *path_parts[parts_to_path - 1];
 	char *temp_str;
 	int i = 0;
 	// tokenize the path and put the contents into a string array
-	path_parts[i] = strtok(file_path, "/");
+	path_parts[i] = strtok(path, "/");
+	//temp_str = strtok(path, "/");
 	while (path_parts[i++] != NULL) {
 		path_parts[i] = strtok(NULL, "/");
 	}
-	int i = 0;
+	i = 0;
 	int block_num;
 	// if there is more than one '/' in the path, the first part of the name inside the root dir will be a directory
 	if ( parts_to_path > 1 ) {
@@ -486,6 +491,7 @@ static int search_path(char *path, unsigned int type)
 		}
 	}
 }
+
 
 /*
  * Return file attributes.
