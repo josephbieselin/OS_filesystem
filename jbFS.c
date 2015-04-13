@@ -1237,6 +1237,8 @@ static int jb_unlink(const char *path)
 	return 0;
 }
 
+
+
 /* Rename a file
  * Rename the file, directory, or other object "from" to the target "to".
  * Note that the source and target don't have to be in the same directory;
@@ -1272,6 +1274,10 @@ static int jb_rename(const char *from, const char *to)
 
 	return 0;
 }
+
+
+
+
 
 /* Create a hard link between "from" and "to"
  * Make a new name for a file.
@@ -1313,7 +1319,6 @@ static int jb_link(const char *from, const char *to)
 	}
 	// otherwise, to_val was 0 meaning the directory path is valid but the file did exist in that directory yet
 
-
 	char to_dir[BLOCK_SIZE + 1];
 	char to_name[BLOCK_SIZE + 1];
 	// get the directory path and file name involved with to
@@ -1344,15 +1349,16 @@ static int jb_link(const char *from, const char *to)
 	// open the inode file
 	char inode_file[BLOCK_SIZE + 1];
 	sprintf(inode_file, "fusedata.%i", val);
-	fopen(inode_file, "r+");
+	FILE *fd = fopen(inode_file, "r+");
 	// update the time fields of the inode
 	update_time(1, 1, 1, 0, fd);
+	fread(temp, 1, 1, fd); rewind(fd);
 	// get and increment the link count and write the data back to the file with the updated link count
 	fscanf(fd, "%s %s %s %s %10c%i%*c %s %s %s %s %s", size, uid, gid, mode, linkcount_str, &linkcount, atime_str, ctime_str, mtime_str, indirect, location);
 	++linkcount; // increment the linkcount to account for the new link to the file
 	if (sprintf(buf, "%s %s %s %s linkcount:%i, %s %s %s %s %s", size, uid, gid, mode, linkcount, atime_str, ctime_str, mtime_str, indirect, location) > BLOCK_SIZE) {
-		logmsg("ERROR:\tjb_link\linkcount++\tEFBIG");
-		errno = EFBIF;
+		logmsg("ERROR:\tjb_link\tlinkcount++\tEFBIG");
+		errno = EFBIG;
 		return -errno;
 	}
 	rewind(fd);
@@ -1362,38 +1368,10 @@ static int jb_link(const char *from, const char *to)
 		return -errno;
 	}
 	fread(temp, 1, 1, fd); rewind(fd);
+	fclose(fd);
 
 	return 0;
 }
-
-
-
-
-
-
-// type (0==dir, 1==file); the passed in FILE stream's respective linkcount field will get incremented; returns a 1 if the new file size will be too large, -1 if a write failed, 0 if successful
-static int update_linkcount(unsigned int type, FILE *fd)
-{
-	} else { // format will be for a file
-		// increment the linkcount for a file because a new directory entry was linked to it
-		fscanf(fd, "%s %s %s %s %10c%i%*c %s %s %s %s %s", size, uid, gid, mode, linkcount_str, &linkcount, atime_str, ctime_str, mtime_str, indirect, location);
-		++linkcount; // increment the linkcount to account for the new link to the file
-		if (sprintf(buf, "%s %s %s %s linkcount:%i, %s %s %s %s %s", size, uid, gid, mode, linkcount, atime_str, ctime_str, mtime_str, indirect, location) > BLOCK_SIZE) {
-			return 1;
-		}
-		rewind(fd);
-		if ( write_to_file(buf, fd) != 0 ) {
-			return -1;
-		}
-		fread(temp, 1, 1, fd); rewind(fd);
-		return update_time(1, 1, 1, 0, fd); // update the atime and ctime of the directory entry; return value handles if errors occur			
-	}
-}
-
-
-
-
-
 
 
 
@@ -1625,7 +1603,8 @@ static int jb_statfs(const char *path, struct statvfs *stbuf)
 	return 0;
 	*/
 	
-	unsigned int free_blocks = 0; unsigned int inodes = 0;
+	unsigned int free_blocks = 0;
+	// unsigned int inodes = 0;
 	
 	int i;
 	char fusedata_str[MAX_PATH_LENGTH + 1];
@@ -1646,8 +1625,10 @@ static int jb_statfs(const char *path, struct statvfs *stbuf)
 	stbuf->f_bfree = free_blocks;
 	stbuf->f_bavail = free_blocks;
 	// f_files = inodes; // parse through every directory and increment a counter if f:name:block_num is found in the filename_to_inode_dict
-	f_ffree = free_blocks;
-	f_namemax = MAX_FILENAME_LEN
+	stbuf->f_ffree = free_blocks;
+	stbuf->f_namemax = MAX_FILENAME_LEN;
+	
+	return 0;
 }
 
 
