@@ -255,7 +255,7 @@ static int create_inode(unsigned int inode_block, unsigned int file_block)
 }
 
 // creates a directory inode block with to 2 links in inode_dict ('.' to self, '..' to parent); returns 0 on success
-static int create_dir(unsigned int dir_block, unsigned int parent_block))
+static int create_dir(unsigned int dir_block, unsigned int parent_block)
 {
 	// open the fusedata block corresponding to this new dir_block number
 	char dir_block_str[BLOCK_SIZE + 1];
@@ -286,7 +286,7 @@ static int update_time(unsigned int type, unsigned int atime, unsigned int ctime
 {
 	// get the current time
 	char new_time[BLOCK_SIZE];
-	sprintf(new_time, "%i,", time(NULL));
+	sprintf(new_time, "%lu,", time(NULL));
 	// variables to be used in fscanf function of the file stream
 	char buf[BLOCK_SIZE + 1];
 	char size[BLOCK_SIZE]; char uid[BLOCK_SIZE]; char gid[BLOCK_SIZE]; char mode[BLOCK_SIZE]; char linkcount[BLOCK_SIZE];
@@ -372,7 +372,7 @@ static int update_time(unsigned int type, unsigned int atime, unsigned int ctime
 	}
 }
 
-
+/* UPDATE LINKCOUNT FOR FILE
 // type (0==dir, 1==file); the passed in FILE stream's respective linkcount field will get incremented; returns a 1 if the new file size will be too large, -1 if a write failed, 0 if successful
 static int update_linkcount(unsigned int type, FILE *fd)
 {
@@ -387,7 +387,7 @@ static int update_linkcount(unsigned int type, FILE *fd)
 	// format will be for a directory
 	if (type == 0) {
 		// increment the linkcount for a directory because a new inode was added to its dict
-		fscanf(fd, "%s %s %s %s %s %s %s %10c%i%*c %s %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount_str, linkcount, fname_inode, inodes);
+		fscanf(fd, "%s %s %s %s %s %s %s %10c%i%*c %s %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount_str, &linkcount, fname_inode, inodes);
 		++linkcount; // increment the linkcount to account for the new directory entry
 		if (sprintf(buf, "%s %s %s %s %s %s %s linkcount:%i, %s %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount, fname_inode, inodes) > BLOCK_SIZE) {
 			return 1;
@@ -400,7 +400,7 @@ static int update_linkcount(unsigned int type, FILE *fd)
 		return update_time(0, 1, 1, 0, fd); // update the atime and ctime of the directory entry; return value handles if errors occur
 	} else { // format will be for a file
 		// increment the linkcount for a file because a new directory entry was linked to it
-		fscanf(fd, "%s %s %s %s %10c%i%*c %s %s %s %s %s", size, uid, gid, mode, linkcount_str, linkcount, atime_str, ctime_str, mtime_str, indirect, location);
+		fscanf(fd, "%s %s %s %s %10c%i%*c %s %s %s %s %s", size, uid, gid, mode, linkcount_str, &linkcount, atime_str, ctime_str, mtime_str, indirect, location);
 		++linkcount; // increment the linkcount to account for the new link to the file
 		if (sprintf(buf, "%s %s %s %s linkcount:%i, %s %s %s %s %s", size, uid, gid, mode, linkcount, atime_str, ctime_str, mtime_str, indirect, location) > BLOCK_SIZE) {
 			return 1;
@@ -413,7 +413,7 @@ static int update_linkcount(unsigned int type, FILE *fd)
 		return update_time(1, 1, 1, 0, fd); // update the atime and ctime of the directory entry; return value handles if errors occur			
 	}
 }
-
+*/
 
 
 // returns the block number if name and type match the entry; name = file/dir name to search for, type (0==dir, 1==file), entry = "type:name:block_number"
@@ -491,7 +491,7 @@ static int search_dir(char *name, unsigned int type, unsigned int dir_block)
 }
 
 // searches the path for a directory/file specified by type (0==dir, 1==file); returns the block number corresponding to the directory/file inode, 0 if the dir/file does not exist, or -1 if the path was not valid
-static int search_path(char *the_path, unsigned int type)
+static int search_path(const char *the_path, unsigned int type)
 {
 	// if one backslash is passed, return the root's block number
 	if ( (strcmp(the_path, "/") == 0) && (type == 0) ) {
@@ -503,7 +503,7 @@ static int search_path(char *the_path, unsigned int type)
 	int parts_to_path = count_chars(path, '/');
 	// create an array of strings to contain all parts of the path
 	char *path_parts[parts_to_path - 1];
-	char *temp_str;
+	//char *temp_str;
 	int i = 0;
 	// tokenize the path and put the contents into a string array
 	path_parts[i] = strtok(path, "/");
@@ -553,11 +553,12 @@ static int search_path(char *the_path, unsigned int type)
 			}
 		}
 	}
+	return 0;
 }
 
 
 // returns a char string based on type; type (0==directory path leading up to last element of path, 1==last element of path)
-char *get_element(int type, char *the_path)
+char *get_element(int type, const char *the_path, char *return_str)
 {
 	char path[BLOCK_SIZE + 1];
 	strcpy(path, the_path);
@@ -567,7 +568,7 @@ char *get_element(int type, char *the_path)
 	char *path_parts[parts_to_path - 1];
 	int i = 0;
 	// tokenize the path and put the contents into a string array
-	part_parts[i] = strtok(path, "/");
+	path_parts[i] = strtok(path, "/");
 	while (path_parts[i++] != NULL) {
 		path_parts[i] = strtok(NULL, "/");
 	}
@@ -577,21 +578,22 @@ char *get_element(int type, char *the_path)
 	}
 	// if we just want the last element, return the last element
 	if (type == 1) {
-		return path_parts[parts_to_path - 1];
+		strcpy(return_str, path_parts[parts_to_path - 1]);
+		return return_str;
 	} else { // return all the elements with "/" separation leading up to the last element
-		char dir_path[BLOCK_SIZE + 1];
-		strcpy(dir_path, "/");
+		//char dir_path[BLOCK_SIZE + 1];
+		strcpy(return_str, "/");
 		for (i = 0; i < (parts_to_path - 2); ++i) {
-			strcat(dir_path, path_parts[i]);
-			strcat(dir_path, "/");
+			strcat(return_str, path_parts[i]);
+			strcat(return_str, "/");
 		}
-		strcat(dir_path, path_parts[i];
-		return dir_path;
+		strcat(return_str, path_parts[i]);
+		return return_str;
 	}	
 }
 
 // updates to a directory's file_to_inode_dict; returns -1 if there is a write error, 1 if the write would cause the directory block to surpass the BLOCK_SIZE limit, 0 if successful
-static int add_dict_entry(char *type, char *name, int inode_block, FILE *fd)
+static int add_dict_entry(char type, char *name, int inode_block, FILE *fd)
 {
 	char buf[BLOCK_SIZE + 1];
 	// get the contents of the file
@@ -614,16 +616,19 @@ static int add_dict_entry(char *type, char *name, int inode_block, FILE *fd)
 	char atime_str[BLOCK_SIZE]; char ctime_str[BLOCK_SIZE]; char mtime_str[BLOCK_SIZE];
 	char fname_inode[BLOCK_SIZE]; //char inodes[BLOCK_SIZE];
 	//char indirect[BLOCK_SIZE]; char location[BLOCK_SIZE];
-	char temp[10];
+	//char temp[10];
 	// format will be for a directory
 	// increment the linkcount for a directory because a new inode was added to its dict
 	fscanf(fd, "%s %s %s %s %s %s %s %10c%i%*c %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount_str, &linkcount, fname_inode);
-	++linkcount; // increment the linkcount to account for the new directory entry
+	// increment the linkcount to account for the new directory entry if the entry is a directory because the new directory's '..' will point to this directory
+	if (type == 'd') {
+		++linkcount;
+	}
 	sprintf(parts_0, "%s %s %s %s %s %s %s linkcount:%i, %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount, fname_inode);
 	rewind(fd);	
 	
 	// add the directory's info back along with appropriate "{}" chars, and add the new inode entry to the end of the previous entries
-	if (sprintf(buf, "%s {%s,%s:%s:%i}}", parts_0, parts[1], type, name, inode_block) > BLOCK_SIZE) {
+	if (sprintf(buf, "%s {%s,%c:%s:%i}}", parts_0, parts[1], type, name, inode_block) > BLOCK_SIZE) {
 		logmsg("ERROR:\tadd_dict_entry\tsprintf\tbuf too large");
 		return 1;
 	}
@@ -636,7 +641,7 @@ static int add_dict_entry(char *type, char *name, int inode_block, FILE *fd)
 }
 
 // attemps to add a to a directory's file_to_inode_dict; returns -1 if there is a write error, 1 if the write would cause the directory block to surpass the BLOCK_SIZE limit, 0 if successful
-static int add_to_dir_dict(char *type, char *name, int inode_block, char *dir_path)
+static int add_to_dir_dict(char type, char *name, int inode_block, char *dir_path)
 {
 	// open the directory's file
 	int dir_block_num = search_path(dir_path, 0);
@@ -652,8 +657,40 @@ static int add_to_dir_dict(char *type, char *name, int inode_block, char *dir_pa
 }
 
 
+// return a file's attribute; type (0==dir, 1==file), attr (0==linkcount, 1==size, 2==atime, 3==ctime, 4==mtime); return -1 if something goes wrong
+static int get_file_attr(int type, int attr, FILE *fd)
+{
+	char temp[BLOCK_SIZE + 1];
+	int links; int size; unsigned int a_time; unsigned int c_time; unsigned int m_time;
 
-
+	rewind(fd);
+	update_time(type, 1, 0, 0, fd);
+	rewind(fd);
+	
+	// set the values for links, size, atime, ctime, and mtime
+	if ( type == 0 ) { // parse through a directory formatted file descriptor
+		fscanf(fd, "%6c%i%*c %s %s %s %6c%u%*c %6c%u%*c %6c%u%*c %10c%i", temp, &size, temp, temp, temp, temp, &a_time, temp, &c_time, temp, &m_time, temp, &links);
+	} else { // parse through a file formatted file descriptor
+		fscanf(fd, "%6c%i%*c %s %s %s %10c%i%*c %6c%u%*c %6c%u%*c %6c%u%*c", temp, &size, temp, temp, temp, temp, &links, temp, &a_time, temp, &c_time, temp, &m_time);
+	}
+	
+	switch (attr)
+	{
+		case 0: // linkcount
+			return links;
+		case 1: // size
+			return size;
+		case 2: // atime
+			return a_time;
+		case 3: // ctime
+			return c_time;
+		case 4: // mtime
+			return m_time;
+		default:
+			return -1;
+	}
+	return -1;
+}
 
 
 
@@ -682,14 +719,8 @@ static int add_to_dir_dict(char *type, char *name, int inode_block, char *dir_pa
 */
 static int jb_getattr(const char *path, struct stat *stbuf)
 {
-/* previous code
-	int res;
-	res = lstat(path, stbuf);
-	if (res == -1)
-		return -errno;
-	return res;
-*/
-
+	// initialize the stat struct to all 0's because this function will set its values
+	memset(stbuf, 0, sizeof(struct stat));
 	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
 	int file_ref = search_path(path, 1);
 	// if file_ref is less than 1 (i.e. 0 or -1) the file path does not exist
@@ -698,33 +729,52 @@ static int jb_getattr(const char *path, struct stat *stbuf)
 		errno = ENOENT;
 		return -errno;
 	}
+	// file_ref holds a number that is the fusedata block of the directory/file inode
+	char fusedata_str[BLOCK_SIZE + 1];
+	sprintf(fusedata_str, "fusedata.%i", file_ref);
+	// open the fusedata.X file and determine if path resolves to a dir (2 '{' in its contents) or a file (1 '{' in its contents)
+	FILE *fd = fopen(fusedata_str, "r+");
+	char file_contents[BLOCK_SIZE + 1];
+	fread(file_contents, BLOCK_SIZE, 1, fd);
+	int num_curly = count_chars(file_contents, '{');
+	mode_t mode; ino_t ino; nlink_t nlink; off_t size; time_t a_time; time_t c_time; time_t m_time;
+	// get_file_attr; type (0==dir, 1==file), attr (0==linkcount, 1==size, 2==atime, 3==ctime, 4==mtime), fd==file_stream; return -1 if something goes wrong
+	// find the stat *stbuf values depending on whether we're looking at a directory or a file
+	if (num_curly == 2) { // if num_curly is 2, the path resolved to a directory
+		mode = S_IFDIR | 0755;
+		ino = file_ref;
+		nlink = get_file_attr(0, 0, fd);
+		size = get_file_attr(0, 1, fd);
+		a_time = get_file_attr(0, 2, fd);
+		c_time = get_file_attr(0, 3, fd);
+		m_time = get_file_attr(0, 4, fd);
+	} else { // the path is a file
+		mode = S_IFREG | 0755;
+		ino = file_ref;
+		nlink = get_file_attr(1, 0, fd);
+		size = get_file_attr(1, 1, fd);
+		a_time = get_file_attr(1, 2, fd);
+		c_time = get_file_attr(1, 3, fd);
+		m_time = get_file_attr(1, 4, fd);
+	}
+	
+	// if there was an error in getting any of the file attributes, set errno to ENOENT and return -errno
+	if ( (nlink == -1) || (size == -1) || (a_time == -1) || (c_time == -1) || (m_time == -1) ) {
+		errno = ENOENT;
+		return -errno;
+	}
+	
+	// set the stat *stbuf values
+	stbuf->st_ino = ino;
+	stbuf->st_mode = mode;
+	stbuf->st_nlink = nlink;
+	stbuf->st_size = size;
+	stbuf->st_atime = a_time;
+	stbuf->st_ctime = c_time;
+	stbuf->st_mtime = m_time;
 
+	return 0;
 	
-	
-	int res;
-	res = 0;
-	memset(stbuf, 0, sizeof(struct stat));
-	if (strcmp(path, "/") == 0) {
-		stbuf->st_mode = S_IFDIR | 0755;
-		stbuf->st_nlink = 2;
-	} /*else if (strcmp(path, KATZ_path) == 0) {
-		stbuf->st_mode = S_IFREG | 0444;
-		stbuf->st_nlink = 1;
-		stbuf->st_size = strlen(KATZ_str);
-	} else if (strcmp(path, "/testing") == 0){ 
-		stbuf->st_mode = S_IFREG | 0444;
-		stbuf->st_nlink = 1;
-		stbuf->st_size = strlen("ht there")-3;
-	} else if(strcmp(path, "/fusedata.0") == 0) {
-		stbuf->st_mode = S_IFREG | 0444;
-		stbuf->st_nlink = 1;
-		stbuf->st_size = strlen("ht there")-3;
-	}*/ else 
-		res = -ENOENT;
-// this puts the file attributes you want to show into the stat buffer
-// so ls can output it to the screen from there
-// this does not MAKE the file
-	return res;
 }
 
 struct jb_dirp {
@@ -787,7 +837,7 @@ static int jb_opendir(const char *path, struct fuse_file_info *fi)
 	// search_path will return -1 if the path has invalid directory references, 0 if the directory does not exist, or a block_number if the directory already exists
 	int dir_ref = search_path(path, 1);
 	// if dir_ref is less than 1 (i.e. 0 or -1) the dir path does not exist
-	if (file_ref < 1) {
+	if (dir_ref < 1) {
 		logmsg("ERROR:\tjb_create\tdir_ref\tENOENT");
 		errno = ENOENT;
 		return -errno;
@@ -958,10 +1008,12 @@ static int jb_mkdir(const char *path, mode_t mode)
 		return -errno;
 	}
 	// get the directory's name and the directory path leading up to that directory name
-	char dir_name = get_element(1, path);
-	char dir_path = get_element(0, path);
+	char dir_name[BLOCK_SIZE + 1];
+	char dir_path[BLOCK_SIZE + 1];
+	get_element(1, path, dir_name); // dir_name = get_element(1, path, dir_name);
+	get_element(0, path, dir_path); // dir_path = get_element(0, path, dir_path);
 	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
-	int inode_dir_val = add_to_dir_dict("d", dir_name, dir_block, dir_path);
+	int inode_dir_val = add_to_dir_dict('d', dir_name, dir_block, dir_path);
 	if (inode_dir_val == -1) {
 		logmsg("FAILURE:\tjb_mkdir\tinode_dir_val\tEIO");
 		errno = EIO;
@@ -1118,10 +1170,12 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	create_inode(inode_block, file_block);
 	
 	// get the file name and the directory path leading up to that file name
-	char file_name = get_element(1, path);
-	char dir_path = get_element(0, path);
+	char file_name[BLOCK_SIZE + 1];
+	char dir_path[BLOCK_SIZE + 1];
+	get_element(1, path, file_name); //file_name = get_element(1, path, file_name);
+	get_element(0, path, dir_path); //dir_path = get_element(0, path, dir_path);
 	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
-	int inode_dir_val = add_to_dir_dict("f", file_name, inode_block, dir_path);
+	int inode_dir_val = add_to_dir_dict('f', file_name, inode_block, dir_path);
 	if (inode_dir_val == -1) {
 		logmsg("FAILURE:\tjb_create\tinode_dir_val\tEIO");
 		errno = EIO;
