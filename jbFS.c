@@ -36,6 +36,7 @@
 #define BLOCK_SIZE 		4096	// size in bytes of a block
 #define MAX_BLOCK_DIGITS	10	// the number of digits in MAX_NUM_BLOCKS won't exceed MAX_BLOCK_DIGITS-1
 #define MAX_PATH_LENGTH		100	// the number of chars a file's pathname could be
+#define MAX_FILENAME_LEN	3800// based on how large a filename could fit in root dir if it were the only entry
 #define FREE_START		1		// start of the free block list
 #define FREE_END		25		// end of the free block list (must be enough blocks between start and end to hold values representing MAX_NUM_BLOCKS)
 #define ROOT			26		// block for root dir
@@ -190,7 +191,7 @@ static int next_free_block()
 	char *next_free_block_str;
 	unsigned int temp_int;
 	// loop through all free block list files if necessary
-	for (i = FREE_START; i <= 2; ++i) {
+	for (i = FREE_START; i <= FREE_END; ++i) {
 		// append the number of the start of the free block list file and then open it
 		sprintf(fusedata_str, "fusedata.%d", i);
 		free_block_file = fopen(fusedata_str, "r+");
@@ -371,50 +372,6 @@ static int update_time(unsigned int type, unsigned int atime, unsigned int ctime
 		return 0;
 	}
 }
-
-/* UPDATE LINKCOUNT FOR FILE
-// type (0==dir, 1==file); the passed in FILE stream's respective linkcount field will get incremented; returns a 1 if the new file size will be too large, -1 if a write failed, 0 if successful
-static int update_linkcount(unsigned int type, FILE *fd)
-{
-	// variables to be used in fscanf function of the file stream
-	char buf[BLOCK_SIZE + 1];
-	char size[BLOCK_SIZE]; char uid[BLOCK_SIZE]; char gid[BLOCK_SIZE]; char mode[BLOCK_SIZE];
-	char linkcount_str[BLOCK_SIZE]; int linkcount;
-	char atime_str[BLOCK_SIZE]; char ctime_str[BLOCK_SIZE]; char mtime_str[BLOCK_SIZE];
-	char fname_inode[BLOCK_SIZE]; char inodes[BLOCK_SIZE];
-	char indirect[BLOCK_SIZE]; char location[BLOCK_SIZE];
-	char temp[10];
-	// format will be for a directory
-	if (type == 0) {
-		// increment the linkcount for a directory because a new inode was added to its dict
-		fscanf(fd, "%s %s %s %s %s %s %s %10c%i%*c %s %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount_str, &linkcount, fname_inode, inodes);
-		++linkcount; // increment the linkcount to account for the new directory entry
-		if (sprintf(buf, "%s %s %s %s %s %s %s linkcount:%i, %s %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount, fname_inode, inodes) > BLOCK_SIZE) {
-			return 1;
-		}
-		rewind(fd);
-		if ( write_to_file(buf, fd) != 0 ) {
-			return -1;
-		}
-		fread(temp, 1, 1, fd); rewind(fd);
-		return update_time(0, 1, 1, 0, fd); // update the atime and ctime of the directory entry; return value handles if errors occur
-	} else { // format will be for a file
-		// increment the linkcount for a file because a new directory entry was linked to it
-		fscanf(fd, "%s %s %s %s %10c%i%*c %s %s %s %s %s", size, uid, gid, mode, linkcount_str, &linkcount, atime_str, ctime_str, mtime_str, indirect, location);
-		++linkcount; // increment the linkcount to account for the new link to the file
-		if (sprintf(buf, "%s %s %s %s linkcount:%i, %s %s %s %s %s", size, uid, gid, mode, linkcount, atime_str, ctime_str, mtime_str, indirect, location) > BLOCK_SIZE) {
-			return 1;
-		}
-		rewind(fd);
-		if ( write_to_file(buf, fd) != 0 ) {
-			return -1;
-		}
-		fread(temp, 1, 1, fd); rewind(fd);
-		return update_time(1, 1, 1, 0, fd); // update the atime and ctime of the directory entry; return value handles if errors occur			
-	}
-}
-*/
-
 
 // returns the block number if name and type match the entry; name = file/dir name to search for, type (0==dir, 1==file), entry = "type:name:block_number"
 static int compare_dir_entry(char *name, unsigned int type, char *entry)
@@ -694,694 +651,7 @@ static int get_file_attr(int type, int attr, FILE *fd)
 
 
 
-
-/*
- * Return file attributes.
- * For the pathname, this should fill in the elements of "stat".
- * If a field is meaningless (e.g., st_ino) then it should be set to 0.
- * 
- * stat
- * ----
- * Return info about a file.
- * ino_t		st_ino			inode number		(ignored unless 'use_ino' mount option is given)
- * mode_t		st_mode			protection
- * nlink_t		st_nlink		number of hard links
- * off_t		st_size			total size, in bytes
- * clkcnt_t		st_blocks		number of __Byte blocks allocated
- * time_t		st_atime		time of last access
- * time_t		st_mtime		time of last modification
- * time_t		st_ctime		time of last status change
- * 
- * Following POSIX macros are defined to check the file type using the st_mode field:
- * S_ISREG - regular file?
- * S_ISDIR - directory?
- * S_ISBLK - block device?
-*/
-static int jb_getattr(const char *path, struct stat *stbuf)
-{
-	// initialize the stat struct to all 0's because this function will set its values
-	memset(stbuf, 0, sizeof(struct stat));
-	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
-	int file_ref = search_path(path, 1);
-	// if file_ref is less than 1 (i.e. 0 or -1) the file path does not exist
-	if (file_ref < 1) {
-		logmsg("ERROR:\tjb_create\tfile_ref\tENOENT");
-		errno = ENOENT;
-		return -errno;
-	}
-	// file_ref holds a number that is the fusedata block of the directory/file inode
-	char fusedata_str[BLOCK_SIZE + 1];
-	sprintf(fusedata_str, "fusedata.%i", file_ref);
-	// open the fusedata.X file and determine if path resolves to a dir (2 '{' in its contents) or a file (1 '{' in its contents)
-	FILE *fd = fopen(fusedata_str, "r+");
-	char file_contents[BLOCK_SIZE + 1];
-	fread(file_contents, BLOCK_SIZE, 1, fd);
-	int num_curly = count_chars(file_contents, '{');
-	mode_t mode; ino_t ino; nlink_t nlink; off_t size; time_t a_time; time_t c_time; time_t m_time;
-	// get_file_attr; type (0==dir, 1==file), attr (0==linkcount, 1==size, 2==atime, 3==ctime, 4==mtime), fd==file_stream; return -1 if something goes wrong
-	// find the stat *stbuf values depending on whether we're looking at a directory or a file
-	if (num_curly == 2) { // if num_curly is 2, the path resolved to a directory
-		mode = S_IFDIR | 0755;
-		ino = file_ref;
-		nlink = get_file_attr(0, 0, fd);
-		size = get_file_attr(0, 1, fd);
-		a_time = get_file_attr(0, 2, fd);
-		c_time = get_file_attr(0, 3, fd);
-		m_time = get_file_attr(0, 4, fd);
-	} else { // the path is a file
-		mode = S_IFREG | 0755;
-		ino = file_ref;
-		nlink = get_file_attr(1, 0, fd);
-		size = get_file_attr(1, 1, fd);
-		a_time = get_file_attr(1, 2, fd);
-		c_time = get_file_attr(1, 3, fd);
-		m_time = get_file_attr(1, 4, fd);
-	}
-	
-	// if there was an error in getting any of the file attributes, set errno to ENOENT and return -errno
-	if ( (nlink == -1) || (size == -1) || (a_time == -1) || (c_time == -1) || (m_time == -1) ) {
-		errno = ENOENT;
-		return -errno;
-	}
-	
-	// set the stat *stbuf values
-	stbuf->st_ino = ino;
-	stbuf->st_mode = mode;
-	stbuf->st_nlink = nlink;
-	stbuf->st_size = size;
-	stbuf->st_atime = a_time;
-	stbuf->st_ctime = c_time;
-	stbuf->st_mtime = m_time;
-
-	return 0;
-	
-}
-
-struct jb_dirp {
-	/* DIR *
-	 * directory stream
-	 * Ordered sequence of all the directory entries in a particular directory.
-	 * Directory entries represent files.
-	 * Files may be removed or added from/to a directory asynchronously to the operation of readdir()
-	*/
-	DIR *dp;
-	
-	/* struct dirent *
-	 * structure type used to return info about directory entries
-	 * ----------------------------------------------------------
-	 * char d_name[]			null-terminated file name component
-	 * ino_t d_fileno			file serial number (for most file this is the same as the st_ino member that "stat" will return for a file)
-	 * unsigned char d_name		length of the file name, not including term-null char
-	 * unsigned char d_type		type of the file, possibly unknown
-	*/
-	struct dirent *entry;
-	
-	
-	off_t offset;
-};
-
-/*
- * Open a directory for reading.
- * Unless the 'default_permissions' mount option is given, this method should check if opendir is permitted for this directory.
- * Optionally opendir may also return an arbitrary filehandle in the fuse_file_info struct, which will be passed to readdir, closedir, and fsyncdir
- * 
- * FUSE provides a "file handle" in the "fuse_file_info" structure.
- * The file handle is stored in the "fh" element of the structure, which is an unsigned 64-bit int (uint64_t) uninterpreted by FUSE.
- * If you choose to use it, you should set that field in your "open", "create", and "opendir" functions.
- * Other functions can then use it.
-*/
-static int jb_opendir(const char *path, struct fuse_file_info *fi)
-{
-/*	previous code:
-	int res;
-	struct jb_dirp *d = malloc(sizeof(struct jb_dirp));
-	if (d == NULL)
-		return -ENOMEM;
-
-	d->dp = opendir(path);
-	if (d->dp == NULL) {
-		res = -errno;
-		free(d);
-		return res;
-	}
-	d->offset = 0;
-	d->entry = NULL;
-
-	fi->fh = (unsigned long) d;
-	return 0;
-*/	
-
-
-	int fd;
-	
-	// search_path will return -1 if the path has invalid directory references, 0 if the directory does not exist, or a block_number if the directory already exists
-	int dir_ref = search_path(path, 1);
-	// if dir_ref is less than 1 (i.e. 0 or -1) the dir path does not exist
-	if (dir_ref < 1) {
-		logmsg("ERROR:\tjb_create\tdir_ref\tENOENT");
-		errno = ENOENT;
-		return -errno;
-	}
-	// otherwise the dir_ref is the block number of the fusedata.X file that refers to the directory path's inode
-	// open the fusedata.X block corresponding the directory
-	char fusedata_inode[MAX_PATH_LENGTH + 1];
-	sprintf(fusedata_inode, "fusedata.%i", dir_ref);
-	fd = open(fusedata_inode, fi->flags);
-	// if there was an error opening the directory's block file
-	if (fd == -1)
-		return -errno;
-	// set the fuse_file_info file handle to the newly created and opened directory inode
-	fi->fh = fd;
-	return 0;	
-}
-
-// Returns (struct jb_dirp *) fi->fh which is a file handle
-static inline struct jb_dirp *get_dirp(struct fuse_file_info *fi)
-{
-	// uintptr_t: int type capable of holding a value converted from a void pointer and then be converted back to that type with a value that compares equal to the original pointer
-	return (struct jb_dirp *) (uintptr_t) fi->fh;
-}
-
-/* Read directory
- * Filesystem may choose between two modes of operation:
- * 	1)	readdir implementation ignores the offset parameter, and passes zero to the filler function's offset;
- * 		the filler function will not return '1' (unless an error happens), so the whole directory is read in a single readdir operation
- * 	2)	readdir implementation keeps track of the offsets of the directory entries;
- * 		it uses the offset parameter and always passes non-zero offset to the filler function;
- * 		when the buffer is full (or an error happens) the filler function will return '1'
- * 
- * Somehwat like "read", in that it starts at a given offset and returns results in a caller-supplied buffer.
- * The offset not a byte offset, and the results are a series of "struct dirents" rather than being uninterpreted bytes.
- * FUSE provides a "filler" function that will help put things into the buffer, making life easier.
- * 
- * General plan for a complete and correct "readdir":
- * --------------------------------------------------
- * 1)	Find the first directory entry following the given offset
- * 2)	Optionally, create a "struct stat" that describes the file as for getattr (but FUSE only looks at st_ino and the file-type bits of st_mode)
- * 3)	Call the "filler" function with arguments of buf, the null-terminated filename, the address of your "struct stat" (or NULL if you have none), and the offset of the next directory entry
- * 4)	If "filler" returns nonzero, or if there are no more files, return 0
- * 5)	Find the next file in the directory
- * 6)	Go back to step 2
- * 
- * From FUSE's POV, the offset is an uninterpreted off_t (i.e., unsigned int).
- * You provide an offset when you call "filler", and its possible that such an offset might come back to you as an argument later.
- * Typically, it's simply the byte offset (within your directory layout) of the directory entry, but it's really up to you.
- * 
- * NOTE: readdir can return errors in a number of instances; it can return -EBADF if the file handle is invalid, or -ENOENT if you use the path argument and the path doesn't exist
-*/
-static int jb_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-		       off_t offset, struct fuse_file_info *fi)
-{
-	/* fuse_fill_dir_t(void *buf, const char *name, const struct stat *stbuf, off_t off)
-		buf:	the buffer passed to the readdir() operation
-		name:	the file name of the directory entry
-		stat:	file attributes, can be NULL
-		off:	offset of the next entry or zero
-	Function to add an entry in a readdir() operation
-	*/
-	
-	/* previous code
-	struct jb_dirp *d = get_dirp(fi);
-
-	(void) path;
-	if (offset != d->offset) {
-		seekdir(d->dp, offset);
-		d->entry = NULL;
-		d->offset = offset;
-	}
-	while (1) {
-		struct stat st;
-		off_t nextoff;
-
-		if (!d->entry) {
-			d->entry = readdir(d->dp);
-			if (!d->entry)
-				break;
-		}
-
-		memset(&st, 0, sizeof(st));
-		st.st_ino = d->entry->d_ino;
-		st.st_mode = d->entry->d_type << 12;
-		nextoff = telldir(d->dp);
-		if (filler(buf, d->entry->d_name, &st, nextoff))
-			break;
-
-		d->entry = NULL;
-		d->offset = nextoff;
-	}
-
-	return 0;
-	*/
-
-	(void) offset;
-	(void) fi;
-
-	if (strcmp(path, "/") != 0)
-		return -ENOENT;
-
-	filler(buf, ".", NULL, 0);
-	filler(buf, "..", NULL, 0);
-/*	filler(buf, KATZ_path + 1, NULL, 0);
-	filler(buf, "/testing" + 1, NULL, 0);
-	filler(buf, "/fusedata.0" +1, NULL, 0);*/
-// the +1 is needed
-// this just shows entries here for each file
-// you're telling it the name of each file to show an entry for
-// this does not CREATE any entries
-
-	return 0;
-	
-}
-
-/* Release directory
- * Similar to "release, except for directories.
-*/
-static int jb_releasedir(const char *path, struct fuse_file_info *fi)
-{
-	struct jb_dirp *d = get_dirp(fi);
-	(void) path;
-	closedir(d->dp);
-	free(d);
-	return 0;
-}
-
-
-
-
-/* Create a directory with the given name
- * Note that the mode argument may not have the type specification bits set, (i.e., S_ISDIR(mode) can be false).
- * To obtain the correct directory type bits, use "mode|S_IFDIR".
- * 
- * Directory permissions are encoded in mode.
- * 
- * mkdir
- * -----
- * the argument "mode" specifies the permissions to use.
- * EDQUOT		user's quote of disk blocks or inodes on the filesystem has been exhausted
- * EEXIST		pathname already exists (not necessarily as a directory)
- * EFAULT		pathname points outside your accessible address space
- * EMLINK		number of links to the parent directory would exceed LINK_MAX
- * ENAMETOOLONG	pathname was too long
- * ENOENT		a directory component in pathname does not exist or is a dangling sym-link
- * ENOSPC		the device containing pathname has no room for the new directory
- * ENOTDIR		a component used as a directory in pathname is not, in fact, a directory
-*/
-static int jb_mkdir(const char *path, mode_t mode)
-{
-	// search_path will return -1 if the path has invalid directory references, 0 if the directory does not exist, or a block_number if the directory already exists
-	int file_ref = search_path(path, 0);
-	if (file_ref == -1) {
-		logmsg("ERROR:\tjb_mkdir\tfile_ref\tENOENT");
-		errno = ENOENT;
-		return -errno;
-	} else if (file_ref > 0) {
-		logmsg("ERROR:\tjb_mkdir\tfile_ref\tEEXIST");
-		errno = EEXIST;
-		return -errno;
-	}
-	// if the directory does not already exist and we have a valid path to some directory preceedign it, create the directory
-	// get the 1 free blocks for the directory inode; if there isn't an available inode, return an error
-	unsigned int dir_block = next_free_block();
-	if (dir_block == -1) {
-		logmsg("ERROR:\tjb_mkdir\tdir_block\tEDQUOTE");
-		errno = EDQUOT; // all available free blocks are used up
-		return -errno;
-	}
-	// get the directory's name and the directory path leading up to that directory name
-	char dir_name[BLOCK_SIZE + 1];
-	char dir_path[BLOCK_SIZE + 1];
-	get_element(1, path, dir_name); // dir_name = get_element(1, path, dir_name);
-	get_element(0, path, dir_path); // dir_path = get_element(0, path, dir_path);
-	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
-	int inode_dir_val = add_to_dir_dict('d', dir_name, dir_block, dir_path);
-	if (inode_dir_val == -1) {
-		logmsg("FAILURE:\tjb_mkdir\tinode_dir_val\tEIO");
-		errno = EIO;
-		return -errno;
-	} else if (inode_dir_val == 1) {
-		logmsg("ERROR:\tjb_mkdir\tinode_dir_val\tEFBIG");
-		errno = EFBIG;
-		return -errno;
-	}
-	// the dir_block was successfully written to the directory
-	
-	// get the fusedata block number of the parent directory path (we know it exists based on the inital search_path called in this function)
-	unsigned int parent_block = search_path(dir_path, 0);
-	// create the new directory's structure and include the inode_dict for this dir and the parent dir
-	if (create_dir(dir_block, parent_block) != 0) { // if there was an error creating the block, it was due to the fact that was an IO error with writing to fusedata.X
-		logmsg("FAILURE:\tjb_mkdir\tcreate_dir\tEIO");
-		errno = EIO;
-		return -errno;
-	}
-	
-	return 0;
-}
-
-
-
-
-/* Remove a file
- * Remove the given file, sym-link, hard link, or special node.
- * NOTE: with hard links supported, unlink only deletes the data when the last hard link is removed.
- * 
- * unlink
- * ------
- * EBUSY		the file pathname cannot but unlinked because it is being used by the system or another process
- * EISDIR		pathname refers to a directory
- * ENAMETOOLONG	pathname was too long
- * ENOENT		a component in pathname does not exist or is a dangling symbolic link, or pathname is empty
- * ENOTDIR		a component used as a directory in pathname is not, in fact, a directory
-*/
-static int jb_unlink(const char *path)
-{
-	int res;
-
-	res = unlink(path);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-/* Rename a file
- * Rename the file, directory, or other object "from" to the target "to".
- * Note that the source and target don't have to be in the same directory;
- * So it may be necessary to move the source to an entirely new directory
- * 
- * rename
- * ------
- * Change the name or location of a file.
- * Any other hard links to the file are unaffected.
- * Open file descriptors for oldpath are also unaffected.
- * If newpath already exists, it will be atomically replaced.
- * If oldpath and newpath are exists hard links reffering to the same file, then "rename" does nothing and returns a success status.
- * oldpath can specify a directory; in this case, newpath must either not exist, or it must specify an empty directory
- * ERRORS:
- * EBUSY		rename fails because oldpath/newpath is a directory that is in use by some process
- * EDQUOT		user's quote of disk blocks on the filesystem has been exhausted
- * EINVAL		the new pathname contained a path prefix of the old, or, more generally, an attempt was made to make a directory a subdir of itself
- * EISDIR		newpath is an existing directory, but oldpath is not a directory
- * EMLINK		oldpath already has the max number of links to it, or it was a directory and the directory containing newpath has the max number of links
- * ENAMETOOLONG	oldpath or newpath was too long
- * ENOENT		the link named by oldpath does not exist; or, a directory component in newpath does not exist; or oldpath/newpath is an empty str
- * ENOSPC		the device containing the file has no room for the new directory entry
- * ENOTDIR		a component used as a directory in oldpath or newpath is not, in fact, a directory; or, oldpath is a dir, and newpath exists but is not a dir
- * EEXIST		newpath is a nonempty dir, that is, contains entries other than '.' and '..'
-*/
-static int jb_rename(const char *from, const char *to)
-{
-	int res;
-
-	res = rename(from, to);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-/* Create a hard link between "from" and "to"
- * Make a new name for a file.
- * If newpath exists, it will NOT be overwritten.
- * 
- * link
- * ----
- * EDQUOT		the user's quote of disk blocks on the filesystem has been exhausted
- * EEXIST		newpath already exists
- * EMLINK		the file referred to by oldpath already has the max number of links to it
- * ENAMETOOLONG	oldpath/newpath was too long
- * ENOENT		a directory component in oldpath/newpath does not exist or is a dangling sym-link
- * ENOSPC		the device containing the file has no room for the new directory entry
- * ENOTDIR		a component used as a directory in oldpath/newpath is not, in fact, a directory
- * EPERM		oldpath is a directory
-*/
-static int jb_link(const char *from, const char *to)
-{
-	int res;
-
-	res = link(from, to);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-
-
-
-/* Create and open a file
- * If the file does not exist, first create it with the specified mode, and then open it
- * 
- * FUSE provides a "file handle" in the "fuse_file_info" structure.
- * The file handle is stored in the "fh" element of the structure, which is an unsigned 64-bit int (uint64_t) uninterpreted by FUSE.
- * If you choose to use it, you should set that field in your "open", "create", and "opendir" functions.
- * Other functions can then use it.
-*/
-static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
-{
-	int fd;
-	
-	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
-	int file_ref = search_path(path, 1);
-	if (file_ref == -1) {
-		logmsg("ERROR:\tjb_create\tfile_ref\tENOENT");
-		errno = ENOENT;
-		return -errno;
-	} else if (file_ref > 0) {
-		logmsg("ERROR:\tjb_create\tfile_ref\tEEXIST");
-		errno = EEXIST;
-		return -errno;
-	}
-	// if the file does not already exist and we have a valid path to some directory, create the file
-	// get the 2 free blocks for the inode and actual file; if there isn't enough inodes, return an error
-	int inode_block = next_free_block();
-	if (inode_block == -1) {
-		logmsg("ERROR:\tjb_create\tinode_block\tEDQUOTE");
-		errno = EDQUOT; // all available free blocks are used up
-		return -errno;
-	}
-	int file_block = next_free_block();
-	if (file_block == -1) {
-		logmsg("ERROR:\tjb_create\tfile_block\tEDQUOTE");
-		errno = EDQUOT; // all available free blocks are used up
-		add_free_block(inode_block); // inode_block was removed from the free block list, but since there isn't room to for the file block, the inode_block should be put back as free
-		return -errno;
-	}
-	// create the inode data block and set it's location to point to the number of the file_block
-	create_inode(inode_block, file_block);
-	
-	// get the file name and the directory path leading up to that file name
-	char file_name[BLOCK_SIZE + 1];
-	char dir_path[BLOCK_SIZE + 1];
-	get_element(1, path, file_name); //file_name = get_element(1, path, file_name);
-	get_element(0, path, dir_path); //dir_path = get_element(0, path, dir_path);
-	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
-	int inode_dir_val = add_to_dir_dict('f', file_name, inode_block, dir_path);
-	if (inode_dir_val == -1) {
-		logmsg("FAILURE:\tjb_create\tinode_dir_val\tEIO");
-		errno = EIO;
-		return -errno;
-	} else if (inode_dir_val == 1) {
-		logmsg("ERROR:\tjb_create\tinode_dir_val\tEFBIG");
-		errno = EFBIG;
-		return -errno;
-	}
-	// the inode block was successfully written to the directory
-	
-	// open the fusedata.X file corresponding to the newly created file
-	char fusedata_inode[MAX_PATH_LENGTH + 1];
-	sprintf(fusedata_inode, "fusedata.%i", inode_block);
-	fd = open(fusedata_inode, fi->flags);
-	// if there was an error opening the file
-	if (fd == -1)
-		return -errno;
-	// set the fuse_file_info file handle to the newly created and opened file
-	fi->fh = fd;
-	return 0;
-}
-
-
-
-
-/* File open operation
- * Optionally "open" may also return an arbitrary filehandle in the "fuse_file_info" struct, which will be passed to all file opeartions
- * If file handles aren't used, this function should check for existence and permissions and return either success or an error code.
- * If file handles are used, you should also allocate any necessary structs and set fi->fh.
- * In addition, "fi" has some other fields that an advanced filesystem might find useful; see struct def in fuse_common.h
- * 
- * FUSE provides a "file handle" in the "fuse_file_info" structure.
- * The file handle is stored in the "fh" element of the structure, which is an unsigned 64-bit int (uint64_t) uninterpreted by FUSE.
- * If you choose to use it, you should set that field in your "open", "create", and "opendir" functions.
- * Other functions can then use it.
-*/
-static int jb_open(const char *path, struct fuse_file_info *fi)
-{
-	int fd;
-	
-	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
-	int file_ref = search_path(path, 1);
-	// if file_ref is less than 1 (i.e. 0 or -1) the file path does not exist
-	if (file_ref < 1) {
-		logmsg("ERROR:\tjb_create\tfile_ref\tENOENT");
-		errno = ENOENT;
-		return -errno;
-	}
-	// otherwise the file_ref is the block number of the fusedata.X file that refers to the file path's inode
-	// open the fusedata.X block corresponding the inode
-	char fusedata_inode[MAX_PATH_LENGTH + 1];
-	sprintf(fusedata_inode, "fusedata.%i", file_ref);
-	fd = open(fusedata_inode, fi->flags);
-	// if there was an error opening the file
-	if (fd == -1)
-		return -errno;
-	// set the fuse_file_info file handle to the newly created and opened file inode
-	fi->fh = fd;
-	return 0;
-}
-
-/* Read data from an open file
- * Read size bytes from the given file into the buffer buf, beginning offset bytes into the file.
- * Returns the number of bytes transferred, or 0 if offset was at or beyond the end of the file.
- * 
- * read
- * ----
- * Read from a file descriptor.
- * On success, the number of bytes read is returned (0 indicates EOF);
- * the file position is advanced by this number.
- * It is not an error if this number is smaller than the number of bytes requested;
- * this many happen for example because fewer bytes are actually available right now.
- * On error, -1 is returned, and errno is set appropriately.
- * EAGAIN		the file descriptor "fd" refers to a file other than a socket and has been marked nonoblocking (O_NONBLOCK), and the read would block
- * EBADF		fd is not a valid file descriptor or is not open for reading
- * EINTR		the call was interrupted by a signal before any data was read
- * EISDIR		fd refers to a directory
- * 
- * POSIX allows a read() that is interrupted after reading some data to return -1 (with errno set to EINTR) or to return the number of bytes already read
-*/
-static int jb_read(const char *path, char *buf, size_t size, off_t offset,
-		    struct fuse_file_info *fi)
-{
-	/* previous code
-	int res;
-
-	(void) path;
-	res = pread(fi->fh, buf, size, offset);
-	if (res == -1)
-		res = -errno;
-
-	return res;
-	*/
-	
- 	const char* KATZ_strz="ht there";
-	size_t len;
-	(void) fi;
-	// for every file here needs to check strcmp is okay
-	if(strcmp(path, KATZ_path) != 0 && strcmp(path, "/testing") !=0 && strcmp(path, "/fusedata.0")  !=0)
-		return -ENOENT;
-
-	if(strcmp(path, "/testing")==0){
-		len = strlen(KATZ_strz);
-	} else {
-		len = strlen(KATZ_str);
-	}
-	if (offset < len) {
-		if (offset + size > len)
-			size = len - offset;
-			if((strcmp(path, "/testing")!=0)) { KATZ_strz=KATZ_str; }
-		memcpy(buf, KATZ_strz + offset, size);
-	} else
-		size = 0;
-
-	return size;
-}
-
-/* Write data to an open file
- * Write should return exactly the number of bytes request except on error.
- * Similar to "read", except it CANNOT return 0 (0 indicates nothing was written to the file).
-*/
-static int jb_write(const char *path, const char *buf, size_t size,
-		     off_t offset, struct fuse_file_info *fi)
-{
-	int res;
-
-	(void) path;
-	res = pwrite(fi->fh, buf, size, offset);
-	if (res == -1)
-		res = -errno;
-
-	return res;
-}
-
-
-/* Get file system statistics
- * 'f_frsize', 'f_favail', 'f_fsid', and 'f_flag' fields are ignored
- * 
- * statvfs (description of the structure contents)
- * -----------------------------------------------
- * Returns info about a mounted filesystem.
- * path is the pathname of any file within the mounted filesystem;
- * buf is a pointer to a statvfs structure defined approximately as follows:
- * 	unsigned long	f_bsize		filesystem block size
- * 	fsblkcnt_t		f_blocks	size of fs in f_frsize (fragment size) units
- * 	fsblkcnt_t		f_bfree		free blocks
- * 	fsblkcnt_t		f_bavail	free blocks for unpriviledged users
- * 	fsfilcnt_t		f_files		inodes
- * 	fsfilcnt_t		f_ffree		free inodes
- * 	unsigned long	f_namemax	maximum filename length
- * 
- * <sys/types.h>
- * -------------
- * fsblkcnt_t		used for file system block counts
- * fsfilcnt_t		used for file system file counts
- * fsblkcnt_t, fsfilcnt_t, and ino_t	shall be defined as unsigned int types
-*/
-static int jb_statfs(const char *path, struct statvfs *stbuf)
-{
-	int res;
-
-	res = statvfs(path, stbuf);
-	if (res == -1)
-		return -errno;
-
-	return 0;
-}
-
-/* Release an open file (called when there are no more references to an open file: all file descriptors are closed and all memory mappings are unmapped)
- * For every open() call there will be exactly one release() call with the same flags and file descriptor.
- * It is possible to have a file opened more than once, in which case only the last release will mean, that no more reads/writes will happen on the file.
- * 
- * No direct corresponding system call ("close" is related).
- * 
- * close
- * -----
- * Not checking the return value of "close" is a common but serious error.
- * Not checking the return value when closing the file may lead to silent loss of data.
- * However, "release" ignores the return value anyway.
-*/
-static int jb_release(const char *path, struct fuse_file_info *fi)
-{
-	(void) path;
-	close(fi->fh);
-
-	return 0;
-}
-
-/* Clean up filesystem (called on filesystem exit)
- * The "private_data" comes from the return value of init
-*/
-void jb_destroy(void *buf)
-{
-
-}
-
-
-
-
-
-
-
-
-// ------------------------- INIT STUFF WITH SUPERBLOCK, FREE BLOCK LIST, AND ROOT -------------------------------------------------
-
+// ----------------------------------- FUNCTIONS FOR jb_init -------------------------------------
 
 // Create the super-block (fusedata.0)
 static int create_superblock(char *buf)
@@ -1575,6 +845,855 @@ static int update_superblock()
 	
 	return 0;
 }
+
+// ----------------------------------- FUNCTIONS FOR jb_init -------------------------------------
+
+
+
+
+
+// ------------------------------------- FUSE FUNCTIONS -----------------------------------------
+
+
+/*
+ * Return file attributes.
+ * For the pathname, this should fill in the elements of "stat".
+ * If a field is meaningless (e.g., st_ino) then it should be set to 0.
+ * 
+ * stat
+ * ----
+ * Return info about a file.
+ * ino_t		st_ino			inode number		(ignored unless 'use_ino' mount option is given)
+ * mode_t		st_mode			protection
+ * nlink_t		st_nlink		number of hard links
+ * off_t		st_size			total size, in bytes
+ * clkcnt_t		st_blocks		number of __Byte blocks allocated
+ * time_t		st_atime		time of last access
+ * time_t		st_mtime		time of last modification
+ * time_t		st_ctime		time of last status change
+ * 
+ * Following POSIX macros are defined to check the file type using the st_mode field:
+ * S_ISREG - regular file?
+ * S_ISDIR - directory?
+ * S_ISBLK - block device?
+*/
+static int jb_getattr(const char *path, struct stat *stbuf)
+{
+	// initialize the stat struct to all 0's because this function will set its values
+	memset(stbuf, 0, sizeof(struct stat));
+	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
+	int file_ref = search_path(path, 1);
+	// if file_ref is less than 1 (i.e. 0 or -1) the file path does not exist
+	if (file_ref < 1) {
+		logmsg("ERROR:\tjb_create\tfile_ref\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	}
+	// file_ref holds a number that is the fusedata block of the directory/file inode
+	char fusedata_str[BLOCK_SIZE + 1];
+	sprintf(fusedata_str, "fusedata.%i", file_ref);
+	// open the fusedata.X file and determine if path resolves to a dir (2 '{' in its contents) or a file (1 '{' in its contents)
+	FILE *fd = fopen(fusedata_str, "r+");
+	char file_contents[BLOCK_SIZE + 1];
+	fread(file_contents, BLOCK_SIZE, 1, fd);
+	int num_curly = count_chars(file_contents, '{');
+	mode_t mode; ino_t ino; nlink_t nlink; off_t size; time_t a_time; time_t c_time; time_t m_time;
+	// get_file_attr; type (0==dir, 1==file), attr (0==linkcount, 1==size, 2==atime, 3==ctime, 4==mtime), fd==file_stream; return -1 if something goes wrong
+	// find the stat *stbuf values depending on whether we're looking at a directory or a file
+	if (num_curly == 2) { // if num_curly is 2, the path resolved to a directory
+		mode = S_IFDIR | 0755;
+		ino = file_ref;
+		nlink = get_file_attr(0, 0, fd);
+		size = get_file_attr(0, 1, fd);
+		a_time = get_file_attr(0, 2, fd);
+		c_time = get_file_attr(0, 3, fd);
+		m_time = get_file_attr(0, 4, fd);
+	} else { // the path is a file
+		mode = S_IFREG | 0755;
+		ino = file_ref;
+		nlink = get_file_attr(1, 0, fd);
+		size = get_file_attr(1, 1, fd);
+		a_time = get_file_attr(1, 2, fd);
+		c_time = get_file_attr(1, 3, fd);
+		m_time = get_file_attr(1, 4, fd);
+	}
+	
+	// if there was an error in getting any of the file attributes, set errno to ENOENT and return -errno
+	if ( (nlink == -1) || (size == -1) || (a_time == -1) || (c_time == -1) || (m_time == -1) ) {
+		fclose(fd);
+		errno = ENOENT;
+		return -errno;
+	}
+	
+	// set the stat *stbuf values
+	stbuf->st_ino = ino;
+	stbuf->st_mode = mode;
+	stbuf->st_nlink = nlink;
+	stbuf->st_size = size;
+	stbuf->st_atime = a_time;
+	stbuf->st_ctime = c_time;
+	stbuf->st_mtime = m_time;
+
+	fclose(fd);
+
+	return 0;
+	
+}
+
+
+
+struct jb_dirp {
+	/* DIR *
+	 * directory stream
+	 * Ordered sequence of all the directory entries in a particular directory.
+	 * Directory entries represent files.
+	 * Files may be removed or added from/to a directory asynchronously to the operation of readdir()
+	*/
+	DIR *dp;
+	
+	/* struct dirent *
+	 * structure type used to return info about directory entries
+	 * ----------------------------------------------------------
+	 * char d_name[]			null-terminated file name component
+	 * ino_t d_fileno			file serial number (for most file this is the same as the st_ino member that "stat" will return for a file)
+	 * unsigned char d_name		length of the file name, not including term-null char
+	 * unsigned char d_type		type of the file, possibly unknown
+	*/
+	struct dirent *entry;
+	
+	
+	off_t offset;
+};
+
+/*
+ * Open a directory for reading.
+ * Unless the 'default_permissions' mount option is given, this method should check if opendir is permitted for this directory.
+ * Optionally opendir may also return an arbitrary filehandle in the fuse_file_info struct, which will be passed to readdir, closedir, and fsyncdir
+ * 
+ * FUSE provides a "file handle" in the "fuse_file_info" structure.
+ * The file handle is stored in the "fh" element of the structure, which is an unsigned 64-bit int (uint64_t) uninterpreted by FUSE.
+ * If you choose to use it, you should set that field in your "open", "create", and "opendir" functions.
+ * Other functions can then use it.
+*/
+static int jb_opendir(const char *path, struct fuse_file_info *fi)
+{
+/*	previous code:
+	int res;
+	struct jb_dirp *d = malloc(sizeof(struct jb_dirp));
+	if (d == NULL)
+		return -ENOMEM;
+
+	d->dp = opendir(path);
+	if (d->dp == NULL) {
+		res = -errno;
+		free(d);
+		return res;
+	}
+	d->offset = 0;
+	d->entry = NULL;
+
+	fi->fh = (unsigned long) d;
+	return 0;
+*/	
+
+
+	int fd;
+	
+	// search_path will return -1 if the path has invalid directory references, 0 if the directory does not exist, or a block_number if the directory already exists
+	int dir_ref = search_path(path, 1);
+	// if dir_ref is less than 1 (i.e. 0 or -1) the dir path does not exist
+	if (dir_ref < 1) {
+		logmsg("ERROR:\tjb_create\tdir_ref\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	}
+	// otherwise the dir_ref is the block number of the fusedata.X file that refers to the directory path's inode
+	// open the fusedata.X block corresponding the directory
+	char fusedata_inode[MAX_PATH_LENGTH + 1];
+	sprintf(fusedata_inode, "fusedata.%i", dir_ref);
+	fd = open(fusedata_inode, fi->flags);
+	// if there was an error opening the directory's block file
+	if (fd == -1)
+		return -errno;
+	// set the fuse_file_info file handle to the newly created and opened directory inode
+	fi->fh = fd;
+	return 0;	
+}
+
+// Returns (struct jb_dirp *) fi->fh which is a file handle
+static inline struct jb_dirp *get_dirp(struct fuse_file_info *fi)
+{
+	// uintptr_t: int type capable of holding a value converted from a void pointer and then be converted back to that type with a value that compares equal to the original pointer
+	return (struct jb_dirp *) (uintptr_t) fi->fh;
+}
+
+
+
+/* Read directory
+ * Filesystem may choose between two modes of operation:
+ * 	1)	readdir implementation ignores the offset parameter, and passes zero to the filler function's offset;
+ * 		the filler function will not return '1' (unless an error happens), so the whole directory is read in a single readdir operation
+ * 	2)	readdir implementation keeps track of the offsets of the directory entries;
+ * 		it uses the offset parameter and always passes non-zero offset to the filler function;
+ * 		when the buffer is full (or an error happens) the filler function will return '1'
+ * 
+ * Somehwat like "read", in that it starts at a given offset and returns results in a caller-supplied buffer.
+ * The offset not a byte offset, and the results are a series of "struct dirents" rather than being uninterpreted bytes.
+ * FUSE provides a "filler" function that will help put things into the buffer, making life easier.
+ * 
+ * General plan for a complete and correct "readdir":
+ * --------------------------------------------------
+ * 1)	Find the first directory entry following the given offset
+ * 2)	Optionally, create a "struct stat" that describes the file as for getattr (but FUSE only looks at st_ino and the file-type bits of st_mode)
+ * 3)	Call the "filler" function with arguments of buf, the null-terminated filename, the address of your "struct stat" (or NULL if you have none), and the offset of the next directory entry
+ * 4)	If "filler" returns nonzero, or if there are no more files, return 0
+ * 5)	Find the next file in the directory
+ * 6)	Go back to step 2
+ * 
+ * From FUSE's POV, the offset is an uninterpreted off_t (i.e., unsigned int).
+ * You provide an offset when you call "filler", and its possible that such an offset might come back to you as an argument later.
+ * Typically, it's simply the byte offset (within your directory layout) of the directory entry, but it's really up to you.
+ * 
+ * NOTE: readdir can return errors in a number of instances; it can return -EBADF if the file handle is invalid, or -ENOENT if you use the path argument and the path doesn't exist
+*/
+static int jb_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+		       off_t offset, struct fuse_file_info *fi)
+{
+	/* fuse_fill_dir_t(void *buf, const char *name, const struct stat *stbuf, off_t off)
+		buf:	the buffer passed to the readdir() operation
+		name:	the file name of the directory entry
+		stat:	file attributes, can be NULL
+		off:	offset of the next entry or zero
+	Function to add an entry in a readdir() operation
+	*/
+	
+	/* previous code
+	struct jb_dirp *d = get_dirp(fi);
+
+	(void) path;
+	if (offset != d->offset) {
+		seekdir(d->dp, offset);
+		d->entry = NULL;
+		d->offset = offset;
+	}
+	while (1) {
+		struct stat st;
+		off_t nextoff;
+
+		if (!d->entry) {
+			d->entry = readdir(d->dp);
+			if (!d->entry)
+				break;
+		}
+
+		memset(&st, 0, sizeof(st));
+		st.st_ino = d->entry->d_ino;
+		st.st_mode = d->entry->d_type << 12;
+		nextoff = telldir(d->dp);
+		if (filler(buf, d->entry->d_name, &st, nextoff))
+			break;
+
+		d->entry = NULL;
+		d->offset = nextoff;
+	}
+
+	return 0;
+	*/
+
+	(void) offset;
+	(void) fi;
+
+	if (strcmp(path, "/") != 0)
+		return -ENOENT;
+
+	filler(buf, ".", NULL, 0);
+	filler(buf, "..", NULL, 0);
+/*	filler(buf, KATZ_path + 1, NULL, 0);
+	filler(buf, "/testing" + 1, NULL, 0);
+	filler(buf, "/fusedata.0" +1, NULL, 0);*/
+// the +1 is needed
+// this just shows entries here for each file
+// you're telling it the name of each file to show an entry for
+// this does not CREATE any entries
+
+	return 0;
+	
+}
+
+
+
+
+/* Release directory
+ * Similar to "release, except for directories.
+*/
+static int jb_releasedir(const char *path, struct fuse_file_info *fi)
+{
+	/* previous code
+	struct jb_dirp *d = get_dirp(fi);
+	(void) path;
+	closedir(d->dp);
+	free(d);
+	return 0;
+	*/
+	close(fi->fh);
+	return 0;
+}
+
+
+
+
+/* Create a directory with the given name
+ * Note that the mode argument may not have the type specification bits set, (i.e., S_ISDIR(mode) can be false).
+ * To obtain the correct directory type bits, use "mode|S_IFDIR".
+ * 
+ * Directory permissions are encoded in mode.
+ * 
+ * mkdir
+ * -----
+ * the argument "mode" specifies the permissions to use.
+ * EDQUOT		user's quote of disk blocks or inodes on the filesystem has been exhausted
+ * EEXIST		pathname already exists (not necessarily as a directory)
+ * EFAULT		pathname points outside your accessible address space
+ * EMLINK		number of links to the parent directory would exceed LINK_MAX
+ * ENAMETOOLONG	pathname was too long
+ * ENOENT		a directory component in pathname does not exist or is a dangling sym-link
+ * ENOSPC		the device containing pathname has no room for the new directory
+ * ENOTDIR		a component used as a directory in pathname is not, in fact, a directory
+*/
+static int jb_mkdir(const char *path, mode_t mode)
+{
+	// search_path will return -1 if the path has invalid directory references, 0 if the directory does not exist, or a block_number if the directory already exists
+	int file_ref = search_path(path, 0);
+	if (file_ref == -1) {
+		logmsg("ERROR:\tjb_mkdir\tfile_ref\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	} else if (file_ref > 0) {
+		logmsg("ERROR:\tjb_mkdir\tfile_ref\tEEXIST");
+		errno = EEXIST;
+		return -errno;
+	}
+	// if the directory does not already exist and we have a valid path to some directory preceedign it, create the directory
+	// get the 1 free blocks for the directory inode; if there isn't an available inode, return an error
+	unsigned int dir_block = next_free_block();
+	if (dir_block == -1) {
+		logmsg("ERROR:\tjb_mkdir\tdir_block\tEDQUOTE");
+		errno = EDQUOT; // all available free blocks are used up
+		return -errno;
+	}
+	// get the directory's name and the directory path leading up to that directory name
+	char dir_name[BLOCK_SIZE + 1];
+	char dir_path[BLOCK_SIZE + 1];
+	get_element(1, path, dir_name); // dir_name = get_element(1, path, dir_name);
+	get_element(0, path, dir_path); // dir_path = get_element(0, path, dir_path);
+	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
+	int inode_dir_val = add_to_dir_dict('d', dir_name, dir_block, dir_path);
+	if (inode_dir_val == -1) {
+		logmsg("FAILURE:\tjb_mkdir\tinode_dir_val\tEIO");
+		errno = EIO;
+		return -errno;
+	} else if (inode_dir_val == 1) {
+		logmsg("ERROR:\tjb_mkdir\tinode_dir_val\tEFBIG");
+		errno = EFBIG;
+		return -errno;
+	}
+	// the dir_block was successfully written to the directory
+	
+	// get the fusedata block number of the parent directory path (we know it exists based on the inital search_path called in this function)
+	unsigned int parent_block = search_path(dir_path, 0);
+	// create the new directory's structure and include the inode_dict for this dir and the parent dir
+	if (create_dir(dir_block, parent_block) != 0) { // if there was an error creating the block, it was due to the fact that was an IO error with writing to fusedata.X
+		logmsg("FAILURE:\tjb_mkdir\tcreate_dir\tEIO");
+		errno = EIO;
+		return -errno;
+	}
+	
+	return 0;
+}
+
+
+
+
+/* Remove a file
+ * Remove the given file, sym-link, hard link, or special node.
+ * NOTE: with hard links supported, unlink only deletes the data when the last hard link is removed.
+ * 
+ * unlink
+ * ------
+ * EBUSY		the file pathname cannot but unlinked because it is being used by the system or another process
+ * EISDIR		pathname refers to a directory
+ * ENAMETOOLONG	pathname was too long
+ * ENOENT		a component in pathname does not exist or is a dangling symbolic link, or pathname is empty
+ * ENOTDIR		a component used as a directory in pathname is not, in fact, a directory
+*/
+static int jb_unlink(const char *path)
+{
+	int res;
+
+	res = unlink(path);
+	if (res == -1)
+		return -errno;
+
+	return 0;
+}
+
+/* Rename a file
+ * Rename the file, directory, or other object "from" to the target "to".
+ * Note that the source and target don't have to be in the same directory;
+ * So it may be necessary to move the source to an entirely new directory
+ * 
+ * rename
+ * ------
+ * Change the name or location of a file.
+ * Any other hard links to the file are unaffected.
+ * Open file descriptors for oldpath are also unaffected.
+ * If newpath already exists, it will be atomically replaced.
+ * If oldpath and newpath are exists hard links reffering to the same file, then "rename" does nothing and returns a success status.
+ * oldpath can specify a directory; in this case, newpath must either not exist, or it must specify an empty directory
+ * ERRORS:
+ * EBUSY		rename fails because oldpath/newpath is a directory that is in use by some process
+ * EDQUOT		user's quote of disk blocks on the filesystem has been exhausted
+ * EINVAL		the new pathname contained a path prefix of the old, or, more generally, an attempt was made to make a directory a subdir of itself
+ * EISDIR		newpath is an existing directory, but oldpath is not a directory
+ * EMLINK		oldpath already has the max number of links to it, or it was a directory and the directory containing newpath has the max number of links
+ * ENAMETOOLONG	oldpath or newpath was too long
+ * ENOENT		the link named by oldpath does not exist; or, a directory component in newpath does not exist; or oldpath/newpath is an empty str
+ * ENOSPC		the device containing the file has no room for the new directory entry
+ * ENOTDIR		a component used as a directory in oldpath or newpath is not, in fact, a directory; or, oldpath is a dir, and newpath exists but is not a dir
+ * EEXIST		newpath is a nonempty dir, that is, contains entries other than '.' and '..'
+*/
+static int jb_rename(const char *from, const char *to)
+{
+	int res;
+
+	res = rename(from, to);
+	if (res == -1)
+		return -errno;
+
+	return 0;
+}
+
+/* Create a hard link between "from" and "to"
+ * Make a new name for a file.
+ * If newpath exists, it will NOT be overwritten.
+ * 
+ * link
+ * ----
+ * EDQUOT		the user's quote of disk blocks on the filesystem has been exhausted
+ * EEXIST		newpath already exists
+ * EMLINK		the file referred to by oldpath already has the max number of links to it
+ * ENAMETOOLONG	oldpath/newpath was too long
+ * ENOENT		a directory component in oldpath/newpath does not exist or is a dangling sym-link
+ * ENOSPC		the device containing the file has no room for the new directory entry
+ * ENOTDIR		a component used as a directory in oldpath/newpath is not, in fact, a directory
+ * EPERM		oldpath is a directory
+*/
+static int jb_link(const char *from, const char *to)
+{
+	// val will continue a positive integer if from represents a valid pathname to an existing file
+	int val = search_path(from, 1);
+	// if val is 0 or -1, the path to a file was not valid
+	if ( val < 1 ) {
+		logmsg("FAILURE:\tjb_link\tval\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	}
+	// otherwise, val now holds the integer of the inode file
+	
+	int to_val = search_path(to, 1);
+	// if to_val is -1, the path was not valid; if it was a positive integer, the file already exists (so we don't overwrite)
+	if ( to_val == -1 ) {
+		logmsg("FAILURE:\tjb_link\tto_val\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	} else if ( to_val > 0 ) { // the file already exists
+		logmsg("ERROR:\tjb_link\tto_val\tEEXIST");
+		errno = EEXIST;
+		return -errno;
+	}
+	// otherwise, to_val was 0 meaning the directory path is valid but the file did exist in that directory yet
+
+
+	char to_dir[BLOCK_SIZE + 1];
+	char to_name[BLOCK_SIZE + 1];
+	// get the directory path and file name involved with to
+	get_element(0, to, to_dir);
+	get_element(1, to, to_name);
+	
+	// add a directory inode entry: type is a file 'f', the name is to_name (the last element of to), the inode number is the same one as from's inode (val), and the directory path is to_dir
+	int dir_dict_return = add_to_dir_dict('f', to_name, val, to_dir);
+	if ( dir_dict_return == -1 ) {
+		logmsg("FAILURE:\tjb_link\tadd_to_dir_dict\tEIO");
+		errno = EIO;
+		return -errno;
+	} else if ( dir_dict_return == 1) {
+		logmsg("ERROR:\tjb_link\tadd_to_dir_dict\tEFBIG");
+		errno = EFBIG;
+		return -errno;
+	}
+	// other wise, the entry was entered successfully
+	
+	// increment the linkcount of the inode since a new directory entry now points to it
+	// variables to be used in fscanf function of the file stream	
+	char buf[BLOCK_SIZE + 1];
+	char size[BLOCK_SIZE]; char uid[BLOCK_SIZE]; char gid[BLOCK_SIZE]; char mode[BLOCK_SIZE];
+	char linkcount_str[BLOCK_SIZE]; int linkcount;
+	char atime_str[BLOCK_SIZE]; char ctime_str[BLOCK_SIZE]; char mtime_str[BLOCK_SIZE];
+	char indirect[BLOCK_SIZE]; char location[BLOCK_SIZE];
+	char temp[10];
+	// open the inode file
+	char inode_file[BLOCK_SIZE + 1];
+	sprintf(inode_file, "fusedata.%i", val);
+	fopen(inode_file, "r+");
+	// update the time fields of the inode
+	update_time(1, 1, 1, 0, fd);
+	// get and increment the link count and write the data back to the file with the updated link count
+	fscanf(fd, "%s %s %s %s %10c%i%*c %s %s %s %s %s", size, uid, gid, mode, linkcount_str, &linkcount, atime_str, ctime_str, mtime_str, indirect, location);
+	++linkcount; // increment the linkcount to account for the new link to the file
+	if (sprintf(buf, "%s %s %s %s linkcount:%i, %s %s %s %s %s", size, uid, gid, mode, linkcount, atime_str, ctime_str, mtime_str, indirect, location) > BLOCK_SIZE) {
+		logmsg("ERROR:\tjb_link\linkcount++\tEFBIG");
+		errno = EFBIF;
+		return -errno;
+	}
+	rewind(fd);
+	if ( write_to_file(buf, fd) != 0 ) {
+		logmsg("FAILURE:\tjb_link\tlinkcount++\tEIO");
+		errno = EIO;
+		return -errno;
+	}
+	fread(temp, 1, 1, fd); rewind(fd);
+
+	return 0;
+}
+
+
+
+
+
+
+// type (0==dir, 1==file); the passed in FILE stream's respective linkcount field will get incremented; returns a 1 if the new file size will be too large, -1 if a write failed, 0 if successful
+static int update_linkcount(unsigned int type, FILE *fd)
+{
+	} else { // format will be for a file
+		// increment the linkcount for a file because a new directory entry was linked to it
+		fscanf(fd, "%s %s %s %s %10c%i%*c %s %s %s %s %s", size, uid, gid, mode, linkcount_str, &linkcount, atime_str, ctime_str, mtime_str, indirect, location);
+		++linkcount; // increment the linkcount to account for the new link to the file
+		if (sprintf(buf, "%s %s %s %s linkcount:%i, %s %s %s %s %s", size, uid, gid, mode, linkcount, atime_str, ctime_str, mtime_str, indirect, location) > BLOCK_SIZE) {
+			return 1;
+		}
+		rewind(fd);
+		if ( write_to_file(buf, fd) != 0 ) {
+			return -1;
+		}
+		fread(temp, 1, 1, fd); rewind(fd);
+		return update_time(1, 1, 1, 0, fd); // update the atime and ctime of the directory entry; return value handles if errors occur			
+	}
+}
+
+
+
+
+
+
+
+
+
+
+/* Create and open a file
+ * If the file does not exist, first create it with the specified mode, and then open it
+ * 
+ * FUSE provides a "file handle" in the "fuse_file_info" structure.
+ * The file handle is stored in the "fh" element of the structure, which is an unsigned 64-bit int (uint64_t) uninterpreted by FUSE.
+ * If you choose to use it, you should set that field in your "open", "create", and "opendir" functions.
+ * Other functions can then use it.
+*/
+static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
+{
+	int fd;
+	
+	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
+	int file_ref = search_path(path, 1);
+	if (file_ref == -1) {
+		logmsg("ERROR:\tjb_create\tfile_ref\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	} else if (file_ref > 0) {
+		logmsg("ERROR:\tjb_create\tfile_ref\tEEXIST");
+		errno = EEXIST;
+		return -errno;
+	}
+	// if the file does not already exist and we have a valid path to some directory, create the file
+	// get the 2 free blocks for the inode and actual file; if there isn't enough inodes, return an error
+	int inode_block = next_free_block();
+	if (inode_block == -1) {
+		logmsg("ERROR:\tjb_create\tinode_block\tEDQUOTE");
+		errno = EDQUOT; // all available free blocks are used up
+		return -errno;
+	}
+	int file_block = next_free_block();
+	if (file_block == -1) {
+		logmsg("ERROR:\tjb_create\tfile_block\tEDQUOTE");
+		errno = EDQUOT; // all available free blocks are used up
+		add_free_block(inode_block); // inode_block was removed from the free block list, but since there isn't room to for the file block, the inode_block should be put back as free
+		return -errno;
+	}
+	// create the inode data block and set it's location to point to the number of the file_block
+	create_inode(inode_block, file_block);
+	
+	// get the file name and the directory path leading up to that file name
+	char file_name[BLOCK_SIZE + 1];
+	char dir_path[BLOCK_SIZE + 1];
+	get_element(1, path, file_name); //file_name = get_element(1, path, file_name);
+	get_element(0, path, dir_path); //dir_path = get_element(0, path, dir_path);
+	// inode_dir_val: -1: failure in writing data, 1: new content on write to file exceeds block size, 0: successful write
+	int inode_dir_val = add_to_dir_dict('f', file_name, inode_block, dir_path);
+	if (inode_dir_val == -1) {
+		logmsg("FAILURE:\tjb_create\tinode_dir_val\tEIO");
+		errno = EIO;
+		return -errno;
+	} else if (inode_dir_val == 1) {
+		logmsg("ERROR:\tjb_create\tinode_dir_val\tEFBIG");
+		errno = EFBIG;
+		return -errno;
+	}
+	// the inode block was successfully written to the directory
+	
+	// open the fusedata.X file corresponding to the newly created file
+	char fusedata_inode[MAX_PATH_LENGTH + 1];
+	sprintf(fusedata_inode, "fusedata.%i", inode_block);
+	fd = open(fusedata_inode, fi->flags);
+	// if there was an error opening the file
+	if (fd == -1)
+		return -errno;
+	// set the fuse_file_info file handle to the newly created and opened file
+	fi->fh = fd;
+	return 0;
+}
+
+
+
+
+/* File open operation
+ * Optionally "open" may also return an arbitrary filehandle in the "fuse_file_info" struct, which will be passed to all file opeartions
+ * If file handles aren't used, this function should check for existence and permissions and return either success or an error code.
+ * If file handles are used, you should also allocate any necessary structs and set fi->fh.
+ * In addition, "fi" has some other fields that an advanced filesystem might find useful; see struct def in fuse_common.h
+ * 
+ * FUSE provides a "file handle" in the "fuse_file_info" structure.
+ * The file handle is stored in the "fh" element of the structure, which is an unsigned 64-bit int (uint64_t) uninterpreted by FUSE.
+ * If you choose to use it, you should set that field in your "open", "create", and "opendir" functions.
+ * Other functions can then use it.
+*/
+static int jb_open(const char *path, struct fuse_file_info *fi)
+{
+	int fd;
+	
+	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
+	int file_ref = search_path(path, 1);
+	// if file_ref is less than 1 (i.e. 0 or -1) the file path does not exist
+	if (file_ref < 1) {
+		logmsg("ERROR:\tjb_create\tfile_ref\tENOENT");
+		errno = ENOENT;
+		return -errno;
+	}
+	// otherwise the file_ref is the block number of the fusedata.X file that refers to the file path's inode
+	// open the fusedata.X block corresponding the inode
+	char fusedata_inode[MAX_PATH_LENGTH + 1];
+	sprintf(fusedata_inode, "fusedata.%i", file_ref);
+	fd = open(fusedata_inode, fi->flags);
+	// if there was an error opening the file
+	if (fd == -1)
+		return -errno;
+	// set the fuse_file_info file handle to the newly created and opened file inode
+	fi->fh = fd;
+	return 0;
+}
+
+
+
+/* Read data from an open file
+ * Read size bytes from the given file into the buffer buf, beginning offset bytes into the file.
+ * Returns the number of bytes transferred, or 0 if offset was at or beyond the end of the file.
+ * 
+ * read
+ * ----
+ * Read from a file descriptor.
+ * On success, the number of bytes read is returned (0 indicates EOF);
+ * the file position is advanced by this number.
+ * It is not an error if this number is smaller than the number of bytes requested;
+ * this many happen for example because fewer bytes are actually available right now.
+ * On error, -1 is returned, and errno is set appropriately.
+ * EAGAIN		the file descriptor "fd" refers to a file other than a socket and has been marked nonoblocking (O_NONBLOCK), and the read would block
+ * EBADF		fd is not a valid file descriptor or is not open for reading
+ * EINTR		the call was interrupted by a signal before any data was read
+ * EISDIR		fd refers to a directory
+ * 
+ * POSIX allows a read() that is interrupted after reading some data to return -1 (with errno set to EINTR) or to return the number of bytes already read
+*/
+static int jb_read(const char *path, char *buf, size_t size, off_t offset,
+		    struct fuse_file_info *fi)
+{
+	/* previous code
+	int res;
+
+	(void) path;
+	res = pread(fi->fh, buf, size, offset);
+	if (res == -1)
+		res = -errno;
+
+	return res;
+	*/
+	
+ 	const char* KATZ_strz="ht there";
+	size_t len;
+	(void) fi;
+	// for every file here needs to check strcmp is okay
+	if(strcmp(path, KATZ_path) != 0 && strcmp(path, "/testing") !=0 && strcmp(path, "/fusedata.0")  !=0)
+		return -ENOENT;
+
+	if(strcmp(path, "/testing")==0){
+		len = strlen(KATZ_strz);
+	} else {
+		len = strlen(KATZ_str);
+	}
+	if (offset < len) {
+		if (offset + size > len)
+			size = len - offset;
+			if((strcmp(path, "/testing")!=0)) { KATZ_strz=KATZ_str; }
+		memcpy(buf, KATZ_strz + offset, size);
+	} else
+		size = 0;
+
+	return size;
+}
+
+
+
+
+/* Write data to an open file
+ * Write should return exactly the number of bytes request except on error.
+ * Similar to "read", except it CANNOT return 0 (0 indicates nothing was written to the file).
+*/
+static int jb_write(const char *path, const char *buf, size_t size,
+		     off_t offset, struct fuse_file_info *fi)
+{
+	int res;
+
+	(void) path;
+	res = pwrite(fi->fh, buf, size, offset);
+	if (res == -1)
+		res = -errno;
+
+	return res;
+}
+
+
+
+
+
+/* Get file system statistics
+ * 'f_frsize', 'f_favail', 'f_fsid', and 'f_flag' fields are ignored
+ * 
+ * statvfs (description of the structure contents)
+ * -----------------------------------------------
+ * Returns info about a mounted filesystem.
+ * path is the pathname of any file within the mounted filesystem;
+ * buf is a pointer to a statvfs structure defined approximately as follows:
+ * 	unsigned long	f_bsize		filesystem block size
+ * 	fsblkcnt_t		f_blocks	size of fs in f_frsize (fragment size) units
+ * 	fsblkcnt_t		f_bfree		free blocks
+ * 	fsblkcnt_t		f_bavail	free blocks for unpriviledged users
+ * 	fsfilcnt_t		f_files		inodes
+ * 	fsfilcnt_t		f_ffree		free inodes
+ * 	unsigned long	f_namemax	maximum filename length
+ * 
+ * <sys/types.h>
+ * -------------
+ * fsblkcnt_t		used for file system block counts
+ * fsfilcnt_t		used for file system file counts
+ * fsblkcnt_t, fsfilcnt_t, and ino_t	shall be defined as unsigned int types
+*/
+static int jb_statfs(const char *path, struct statvfs *stbuf)
+{
+	/* previous code
+	int res;
+
+	res = statvfs(path, stbuf);
+	if (res == -1)
+		return -errno;
+
+	return 0;
+	*/
+	
+	unsigned int free_blocks = 0; unsigned int inodes = 0;
+	
+	int i;
+	char fusedata_str[MAX_PATH_LENGTH + 1];
+	char file_contents[BLOCK_SIZE + 1];
+	FILE *fd;
+	for (i = FREE_START; i <= FREE_END; ++i) {
+		// open and read the contents of fusedata.X (one of the free block list files) into a buffer
+		sprintf(fusedata_str, "fusedata.%i", i);
+		fd = fopen(fusedata_str, "r+");
+		fread(file_contents, BLOCK_SIZE, 1, fd);
+		// the number of characters in the file represents the number of free blocks available in that file
+		free_blocks += count_chars(file_contents, ',');
+		fclose(fd);
+	}
+	
+	stbuf->f_bsize = BLOCK_SIZE;
+	stbuf->f_blocks = MAX_NUM_BLOCKS;
+	stbuf->f_bfree = free_blocks;
+	stbuf->f_bavail = free_blocks;
+	// f_files = inodes; // parse through every directory and increment a counter if f:name:block_num is found in the filename_to_inode_dict
+	f_ffree = free_blocks;
+	f_namemax = MAX_FILENAME_LEN
+}
+
+
+
+
+
+/* Release an open file (called when there are no more references to an open file: all file descriptors are closed and all memory mappings are unmapped)
+ * For every open() call there will be exactly one release() call with the same flags and file descriptor.
+ * It is possible to have a file opened more than once, in which case only the last release will mean, that no more reads/writes will happen on the file.
+ * 
+ * No direct corresponding system call ("close" is related).
+ * 
+ * close
+ * -----
+ * Not checking the return value of "close" is a common but serious error.
+ * Not checking the return value when closing the file may lead to silent loss of data.
+ * However, "release" ignores the return value anyway.
+*/
+static int jb_release(const char *path, struct fuse_file_info *fi)
+{
+	(void) path;
+	
+	// close the open file descriptor stored in fi
+	close(fi->fh);
+
+	return 0;
+}
+
+
+
+
+/* Clean up filesystem (called on filesystem exit)
+ * The "private_data" comes from the return value of init
+*/
+void jb_destroy(void *private_data)
+{
+	// don't do anything ???????????????
+}
+
+
+
+
+
+
+
+
 
 /* Initialize filesystem
  * The return value will be passed in the "private_data" field of "fuse_context" to all file operations and as a parameter to the "destroy" method
