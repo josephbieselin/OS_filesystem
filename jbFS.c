@@ -49,11 +49,7 @@
 
 // Other Constants
 #define FILES_DIR "/fusedata"	// directory to put fusedata.X files
-#define LOG_FILE "/home/joe/OS/filesystem/log.txt"	// log file
-
-
-static const char *KATZ_str ="hi";
-static const char *KATZ_path = "/KATZz";
+#define LOG_FILE "~/Desktop/log.txt"	// log file
 
 
 void logmsg(const char *s)
@@ -62,7 +58,6 @@ void logmsg(const char *s)
 	fprintf(f, "%s\n\n", s); 
 	fclose(f);
 }
-
 
 // Return true if the passed in cstring is a file that exists; false otherwise
 int file_exists(const char* name)
@@ -81,6 +76,21 @@ static int write_to_file(char *buf, FILE *file_stream)
 		logmsg("FAILURE:\twrite_to_file\tfwrite");
 		return -errno;
 	}
+	return 0;
+}
+
+// writes BLOCK_SIZE number of 0's to the file; returns 0 on success, -1 on failure
+static int reset_block(FILE *fd)
+{
+	rewind(fd);
+	char buf[BLOCK_SIZE + 1];
+	int char_zero = '0';
+	memset(buf, char_zero, BLOCK_SIZE);
+	if (write_to_file(buf, fd) != 0) {
+		logmsg("reset_block failed to reset file");
+		return -1;
+	}
+	rewind(fd);
 	return 0;
 }
 
@@ -277,6 +287,7 @@ static int create_dir(unsigned int dir_block, unsigned int parent_block)
 		fclose(fd);
 		return -1;
 	}
+	fclose(fd);
 	return 0;
 	
 }
@@ -519,7 +530,6 @@ static int search_path(const char *the_path, unsigned int type)
 	return 0;
 }
 
-
 // returns a char string based on type; type (0==directory path leading up to last element of path, 1==last element of path)
 char *get_element(int type, const char *the_path, char *return_str)
 {
@@ -629,6 +639,81 @@ static int add_to_dir_dict(char type, char *name, int inode_block, char *dir_pat
 	return result;
 }
 
+// decrement the link count and possibly remove the file if link count drops to 0; returns -1 on error, 0 on success
+static int unlink_inode(FILE *fd, int inode_num)
+{
+	// decrement the linkcount of the inode since a directory entry is removed
+	// variables to be used in fscanf function of the file stream
+	char buf[BLOCK_SIZE + 1];
+	char size[BLOCK_SIZE]; char uid[BLOCK_SIZE]; char gid[BLOCK_SIZE]; char mode[BLOCK_SIZE];
+	char linkcount_str[BLOCK_SIZE]; int linkcount;
+	char atime_str[BLOCK_SIZE]; char ctime_str[BLOCK_SIZE]; char mtime_str[BLOCK_SIZE];
+	char indirect[BLOCK_SIZE]; int indirect_val;
+	char location[BLOCK_SIZE]; int location_val;
+	char temp[10];
+	// update the time fields of the inode
+	update_time(1, 1, 1, 0, fd);
+	fread(temp, 1, 1, fd); rewind(fd);
+	// get and decrement the link count and write the data back to the file with the updated link count
+	// reset the file to all 0's so the new data is present, but if link count drops to 0, we must also add the blocks back to the free block list and set all the blocks to all 0's
+	fscanf(fd, "%s %s %s %s %10c%i%*c %s %s %s %9c%i%*c %9c%i%*c", size, uid, gid, mode, linkcount_str, &linkcount, atime_str, ctime_str, mtime_str, indirect, &indirect_val, location, &location_val);
+	--linkcount; // decrement the linkcount to account for the removed link to the file
+	
+	// reset file to 0's
+	if (reset_block(fd) == -1) {
+		return -1;
+	}
+	char *temp1;
+	char temp2[BLOCK_SIZE + 1];
+	FILE *temp_fh;
+	int temp_int;
+	char temp_filename[BLOCK_SIZE + 1];
+	if (linkcount == 0) { // add the inode back to the free block list, reset the data the inode points to in files and add those inode(s) back to the free block list
+		sprintf(temp2, "%s/fusedata.%i", FILES_DIR, location_val);
+		temp_fh = fopen(temp2, "r+");
+		if (indirect_val == 0) {
+			// open the block at location_val and reset its data to all 0's
+			reset_block(temp_fh);
+			// put location_val back on the free block list
+			add_free_block(location_val);
+		} else { // indirect == 1 & the location holds other inodes filled with data
+			// read the contents of the indirect file, and for each comma separated value, open that value's block and reset it to 0's, then add that value back to the free block list
+			fread(buf, BLOCK_SIZE, 1, temp_fh);
+			fclose(temp_fh);
+			temp1 = strtok(buf, ",");
+			while (temp1 != NULL) {
+				temp_int = atoi(temp1);
+				if (temp_int != 0) {
+					// reset the fusedata.X block of the file data and give that file block number back to the free block list
+					sprintf(temp_filename, "%s/fusedata.%i", FILES_DIR, temp_int);
+					temp_fh = fopen(temp_filename, "r+");
+					reset_block(temp_fh);
+					fclose(temp_fh);
+					add_free_block(temp_int);
+				}
+				temp1 = strtok(NULL, ",");
+			}
+		}
+		fclose(temp_fh);
+	}
+	
+	if (sprintf(buf, "%s %s %s %s linkcount:%i, %s %s %s indirect:%i, location:%i}", size, uid, gid, mode, linkcount, atime_str, ctime_str, mtime_str, indirect_val, location_val) > BLOCK_SIZE) {
+		logmsg("ERROR:\tjb_link\tlinkcount++\tEFBIG");
+		errno = EFBIG;
+		return -errno;
+	}
+	rewind(fd);
+	if ( write_to_file(buf, fd) != 0 ) {
+		logmsg("FAILURE:\tjb_link\tlinkcount++\tEIO");
+		errno = EIO;
+		return -errno;
+	}
+	fread(temp, 1, 1, fd); rewind(fd);
+	fclose(fd);
+
+	return 0;
+
+}
 
 // return a file's attribute; type (0==dir, 1==file), attr (0==linkcount, 1==size, 2==atime, 3==ctime, 4==mtime); return -1 if something goes wrong
 static int get_file_attr(int type, int attr, FILE *fd)
@@ -1016,8 +1101,8 @@ static int jb_opendir(const char *path, struct fuse_file_info *fi)
 	return 0;
 */	
 
-
-	//~ int fd;
+//~ 
+	int fd;
 	
 	// search_path will return -1 if the path has invalid directory references, 0 if the directory does not exist, or a block_number if the directory already exists
 	int dir_ref = search_path(path, 0);
@@ -1031,12 +1116,12 @@ static int jb_opendir(const char *path, struct fuse_file_info *fi)
 	// open the fusedata.X block corresponding the directory
 	char fusedata_inode[MAX_PATH_LENGTH + 1];
 	sprintf(fusedata_inode, "/fusedata/fusedata.%i", dir_ref);
-//	fd = open(fusedata_inode, fi->flags);
-//	// if there was an error opening the directory's block file
-//	if (fd == -1)
-//		return -errno;
+	fd = open(fusedata_inode, O_RDWR);
+	// if there was an error opening the directory's block file
+	if (fd == -1)
+		return -errno;
 	// set the fuse_file_info file handle to the newly created and opened directory inode
-//	fi->fh = fd;
+	fi->fh = fd;
 	return 0;	
 }
 
@@ -1336,6 +1421,7 @@ static int jb_unlink(const char *path)
 	i = 0;
 	int j;
 	int entry_name_to_remove;
+	int temp_int;
 	// loop through each inode in the directory
 	while (i < num_entries) {
 		j = 0;
@@ -1345,7 +1431,8 @@ static int jb_unlink(const char *path)
 			entry_info[j] = strtok(NULL, ":");
 		}
 		// when we have matched the file to be unlinked's inode number with a directory's entry, set a variable
-		if (entry_info[2] == inode_num) {
+		temp_int = atoi(entry_info[2]);
+		if (temp_int == inode_num) {
 			entry_name_to_remove = i;
 		}
 		++i;
@@ -1366,51 +1453,26 @@ static int jb_unlink(const char *path)
 	strcat(buf, entry_names[i]);
 	strcat(buf, "}}");
 	// buf now holds the directory inodes, excluding the one we want to remove
+	
+	// sets the file to have all 0's
 	reset_block(fd);
-	
-	
-	
-	
-	
-	// copy the info about the directory into a char array so we can update the link count
-	char parts_0[BLOCK_SIZE + 1];
-	// get the original directory info, updating the linkcount, and put it into the parts_0 char array
-	char size[BLOCK_SIZE]; char uid[BLOCK_SIZE]; char gid[BLOCK_SIZE]; char mode[BLOCK_SIZE];
-	char linkcount_str[BLOCK_SIZE]; int linkcount;
-	char atime_str[BLOCK_SIZE]; char ctime_str[BLOCK_SIZE]; char mtime_str[BLOCK_SIZE];
-	char fname_inode[BLOCK_SIZE];
-	fscanf(fd, "%s %s %s %s %s %s %s %10c%i%*c %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount_str, &linkcount, fname_inode);
-	// increment the linkcount to account for the new directory entry if the entry is a directory because the new directory's '..' will point to this directory
-	if (type == 'd') {
-		++linkcount;
+	// writes the buffer to the file
+	rewind(fd);
+	if (write_to_file(buf, fd) != 0) {
+		fclose(fd);
+		logmsg("error writing to file in jb_unlink");
+		errno = EIO;
+		return -errno;
 	}
-	sprintf(parts_0, "%s %s %s %s %s %s %s linkcount:%i, %s", size, uid, gid, mode, atime_str, ctime_str, mtime_str, linkcount, fname_inode);
-	rewind(fd);	
-	
-	// add the directory's info back along with appropriate "{}" chars, and add the new inode entry to the end of the previous entries
-	if (sprintf(buf, "%s {%s,%c:%s:%i}}", parts_0, parts[1], type, name, inode_block) > BLOCK_SIZE) {
-		logmsg("ERROR:\tadd_dict_entry\tsprintf\tbuf too large");
-		return 1;
-	}
-	if ( write_to_file(buf, fd) != 0 ) {
-		logmsg("FAILURE:\tadd_dict_entry\twrite_to_file");
-		return -1;
-	}
-	
-	
-	
-	
-	
-	
-	
-	
+
 	fclose(fd);
 	
-	
-	
-	
-	
-	
+	// open the inode file to decrement link (and possible remove the file if link count drops to 0
+	char inode_file_str[BLOCK_SIZE + 1];
+	sprintf(inode_file_str, "/fusedata/fusedata.%i", inode_num);
+	fd = fopen(inode_file_str, "r+");
+	// decrement the link count for the passed in inode file descriptor
+	unlink_inode(fd, inode_num);
 	
 	return 0;
 }
@@ -1444,12 +1506,16 @@ static int jb_unlink(const char *path)
 */
 static int jb_rename(const char *from, const char *to)
 {
-	int res;
-
-	res = rename(from, to);
-	if (res == -1)
-		return -errno;
-
+	// Didn't get a chance to do this
+	
+	/* PSEUDO-CODE
+	 * check to make sure 'from' is a valid path
+	 * check to make sure 'to' is a valid path
+	 * remove 'from' from its directory path
+	 * if 'to' exists as a file already, call jb_unlink on it
+	 * otherwise, put 'from' and its inode block number in the directory 'to' was stored in, using the name passed in with 'to' as the entry name
+	*/
+	
 	return 0;
 }
 
@@ -1565,7 +1631,7 @@ static int jb_link(const char *from, const char *to)
 */
 static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
-	//~ int fd;
+	int fd;
 	
 	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
 	int file_ref = search_path(path, 1);
@@ -1617,12 +1683,12 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	// open the fusedata.X file corresponding to the newly created file
 	char fusedata_inode[MAX_PATH_LENGTH + 1];
 	sprintf(fusedata_inode, "/fusedata/fusedata.%i", inode_block);
-	//~ fd = open(fusedata_inode, fi->flags);
-	//~ // if there was an error opening the file
-	//~ if (fd == -1)
-		//~ return -errno;
-	//~ // set the fuse_file_info file handle to the newly created and opened file
-	//~ fi->fh = fd;
+	fd = open(fusedata_inode, O_RDWR);
+	// if there was an error opening the file
+	if (fd == -1)
+		return -errno;
+	// set the fuse_file_info file handle to the newly created and opened file
+	fi->fh = fd;
 	return 0;
 }
 
@@ -1642,7 +1708,7 @@ static int jb_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 */
 static int jb_open(const char *path, struct fuse_file_info *fi)
 {
-	//~ int fd;
+	int fd;
 	
 	// search_path will return -1 if the path has invalid directory references, 0 if the file does not exist, or a block_number if the file already exists
 	int file_ref = search_path(path, 1);
@@ -1656,12 +1722,12 @@ static int jb_open(const char *path, struct fuse_file_info *fi)
 	// open the fusedata.X block corresponding the inode
 	char fusedata_inode[MAX_PATH_LENGTH + 1];
 	sprintf(fusedata_inode, "/fusedata/fusedata.%i", file_ref);
-	//~ fd = open(fusedata_inode, fi->flags);
-	//~ // if there was an error opening the file
-	//~ if (fd == -1)
-		//~ return -errno;
-	//~ // set the fuse_file_info file handle to the newly created and opened file inode
-	//~ fi->fh = fd;
+	fd = open(fusedata_inode, O_RDWR);
+	// if there was an error opening the file
+	if (fd == -1)
+		return -errno;
+	// set the fuse_file_info file handle to the newly created and opened file inode
+	fi->fh = fd;
 	return 0;
 }
 
@@ -1689,42 +1755,51 @@ static int jb_open(const char *path, struct fuse_file_info *fi)
 static int jb_read(const char *path, char *buf, size_t size, off_t offset,
 		    struct fuse_file_info *fi)
 {
-	/* previous code
-	int res;
-
-	(void) path;
-	res = pread(fi->fh, buf, size, offset);
-	if (res == -1)
-		res = -errno;
-
-	return res;
-	*/
-	
- 	const char* KATZ_strz="ht there";
-	size_t len;
-	(void) fi;
-	// for every file here needs to check strcmp is okay
-	if(strcmp(path, KATZ_path) != 0 && strcmp(path, "/testing") !=0 && strcmp(path, "/fusedata.0")  !=0)
-		return -ENOENT;
-
-	if(strcmp(path, "/testing")==0){
-		len = strlen(KATZ_strz);
-	} else {
-		len = strlen(KATZ_str);
+	int inode_num = search_path(path, 1);
+	if (inode_num < 1) {
+		inode_num = search_path(path, 0);
+		if (inode_num > 0) {
+			// if path refers to a directory
+			errno = EISDIR;
+			return -1;
+		}
+		// if path does not exist
+		errno = ENOENT;
+		return -1;
 	}
-	if (offset < len) {
-		if (offset + size > len)
-			size = len - offset;
-			if((strcmp(path, "/testing")!=0)) { KATZ_strz=KATZ_str; }
-		memcpy(buf, KATZ_strz + offset, size);
-	} else
-		size = 0;
+	char fusedata_str[BLOCK_SIZE + 1];
+	sprintf(fusedata_str, "%s/fusedata.%i", FILES_DIR, inode_num);
+	FILE *inode_file = fopen(fusedata_str, "r+");
+	update_time(1, 1, 0, 0, inode_file);
+	int fsize = get_file_attr(1, 1, inode_file);
+	if (offset >= fsize) {
+		return 0;
+	}
+	
+	// Did not have time to finish this
+	
+	/* PSEUDO-CODE
+	 * go into inode_file and check to see if indirect is 1
+	 * if it is not 1, go open the block number referenced by location
+	 * 	use fseek to position the file stream offset bytes into the file
+	 * 	read size bytes from that position into buf (or until EOF is reached)
+	 * if indirect is 1, go to the block number referenced by location and get ready to tokenize based on commas
+	 * 	if offset is greater than BLOCK_SIZE, determine how many indirect block numbers in the comma separated list should be skipped
+	 * 	this can be done by offset / BLOCK_SIZE
+	 * 	if offset is less than BLOCK_SIZE, open the file data pointed to by the first number in the indirect list
+	 * 	in that file, call fseek to move the file stream pointer by offset bytes from the beginning
+	 * 	begin reading data into buf up to 'size' bytes or until EOF is reached
+	 * 	if EOF is reached before we've read 'size' bytes, get the next number in the indirect list and open that fusedata.X block number
+	 * 	call strlen(buf) to determine how many bytes we have read so far and substract that from size, and with this new value, begin
+	 * 	reading data up to new_size bytes or EOF is reached
+	 * 	if EOF is reached again, repeat the process again find out how many bytes have been put into buf so far and compare that to the
+	 * 	'size' of how many bytes the user wanted to read
+	 * 
+	 * return strlen(buf) which is the number of bytes read
+	*/
 
-	return size;
+	return strlen(buf);
 }
-
-
-
 
 /* Write data to an open file
  * Write should return exactly the number of bytes request except on error.
@@ -1733,14 +1808,89 @@ static int jb_read(const char *path, char *buf, size_t size, off_t offset,
 static int jb_write(const char *path, const char *buf, size_t size,
 		     off_t offset, struct fuse_file_info *fi)
 {
-	int res;
 
-	(void) path;
-	res = pwrite(fi->fh, buf, size, offset);
-	if (res == -1)
-		res = -errno;
+	int inode_num = search_path(path, 1);
+	if (inode_num < 1) {
+		inode_num = search_path(path, 0);
+		if (inode_num > 0) {
+			// if path refers to a directory
+			errno = EISDIR;
+			return -1;
+		}
+		// if path does not exist
+		errno = ENOENT;
+		return -1;
+	}
+	
+	char fusedata_str[BLOCK_SIZE + 1];
+	sprintf(fusedata_str, "%s/fusedata.%i", FILES_DIR, inode_num);
+	FILE *inode_file = fopen(fusedata_str, "r+");
+	update_time(1, 1, 1, 1, inode_file);
+	int fsize = get_file_attr(1, 1, inode_file);
 
-	return res;
+	// DOES NOT HANDLE THE INDIRECT BLOCK BUT PSEUDO-CODE TO FOLLOW
+	
+	char buffer[BLOCK_SIZE + 1];
+	fread(buffer, BLOCK_SIZE, 1, inode_file);
+	int i = 0;
+	char *data;
+	char *location;
+	int return_size;
+	FILE *fh;
+	data = strtok(buffer, ",");
+	while ( (data != NULL) && (i <= 9) ){
+		// data will hold location:block_num when i = 8
+		if (i == 9) {
+			location = strtok(data, ":");
+			location = strtok(NULL, ":");
+			int file_block = atoi(location);
+			char file_name[BLOCK_SIZE + 1];
+			sprintf(file_name, "%s/fusedata.%i", FILES_DIR, file_block);
+			fh = fopen(file_name, "r+");
+			if (fsize < offset) {
+				offset = fsize;
+			}
+			fseek(fh, offset, SEEK_SET);
+			if ( (offset + size) > BLOCK_SIZE ) {
+				size = BLOCK_SIZE - offset;
+			}
+			return_size = fwrite(buffer, size, 1, fh);
+		}
+		++i;
+		data = strtok(NULL, ",");
+	}
+	
+	/* PSEUDO-CODE FOR INDIRECT
+	 * if size of the file +  
+	*/
+	
+	
+	// upate the size of the inode since a new file entry now points to it
+	// variables to be used in fscanf function of the file stream	
+	char size_str[BLOCK_SIZE]; int new_size; char uid[BLOCK_SIZE]; char gid[BLOCK_SIZE]; char mode[BLOCK_SIZE];
+	char linkcount_str[BLOCK_SIZE];
+	char atime_str[BLOCK_SIZE]; char ctime_str[BLOCK_SIZE]; char mtime_str[BLOCK_SIZE];
+	char indirect[BLOCK_SIZE]; char locate[BLOCK_SIZE];
+	// update the time fields of the inode
+	update_time(1, 1, 1, 0, inode_file); rewind(inode_file);
+	// get and increment the link count and write the data back to the file with the updated link count
+	fscanf(inode_file, "%6c%i&*c %s %s %s %s %s %s %s %s %s", size_str, &new_size, uid, gid, mode, linkcount_str, atime_str, ctime_str, mtime_str, indirect, locate);
+	new_size = return_size; 
+	if (sprintf(buffer, "{size:%i, %s %s %s %s %s %s %s %s %s", new_size, uid, gid, mode, linkcount_str, atime_str, ctime_str, mtime_str, indirect, locate) > BLOCK_SIZE) {
+		logmsg("ERROR:\tjb_link\tlinkcount++\tEFBIG");
+		errno = EFBIG;
+		return -errno;
+	}
+	rewind(inode_file);
+	if ( write_to_file(buffer, inode_file) != 0 ) {
+		logmsg("FAILURE:\tjb_link\tlinkcount++\tEIO");
+		errno = EIO;
+		return -errno;
+	}
+	
+	fclose(inode_file);
+	fclose(fh);
+	return return_size;
 }
 
 
@@ -1910,8 +2060,8 @@ static struct fuse_operations jb_oper = {
 	.getattr	= jb_getattr,
 	.create		= jb_create,
 	.open		= jb_open,
-	//.read		= jb_read,
-	//.write		= jb_write,
+	.read		= jb_read,
+	.write		= jb_write,
 	.statfs		= jb_statfs,
 	.release	= jb_release,
 	.destroy	= jb_destroy,
@@ -1924,6 +2074,7 @@ static struct fuse_operations jb_oper = {
 	.rename		= jb_rename,
 	.unlink		= jb_unlink,
 	//// Functions needed for Filesystem (Part 1)
+	
 	.flag_nullpath_ok = 0,
 	/* .flag_nullpath_ok
 	 * ------------------
